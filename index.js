@@ -102,13 +102,13 @@ async function resolveLid(lid) {
 async function fetchContactAbout(chatId) {
   try {
     const resp = await fetch(
-      `${WAHA_URL}/api/contacts/about?contactId=${encodeURIComponent(chatId)}&session=${WAHA_SESSION}`,
+      `${WAHA_URL}/api/contacts?contactId=${encodeURIComponent(chatId)}&session=${WAHA_SESSION}`,
       { headers: { 'X-Api-Key': WAHA_API_KEY } }
     );
     if (!resp.ok) return null;
     const data = await resp.json();
     console.log('[contact] full response:', JSON.stringify(data));
-    const name = data?.pushname || data?.pushName || data?.name || data?.shortName || null;
+    const name = data?.shortName || data?.name || null;
     return name;
   } catch (e) {
     console.error('[fetchContactAbout] failed:', e.message);
