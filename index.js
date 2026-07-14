@@ -33,12 +33,12 @@ function todayString() {
   });
 }
 
-async function askGemini(chatId, userText, knownName) {
+async function askGemini(chatId, userText, knownName, knownPhone) {
   const history = getHistory(chatId);
 
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    systemInstruction: buildPrompt(todayString(), knownName),
+    systemInstruction: buildPrompt(todayString(), knownName, knownPhone),
   });
 
   const chat = model.startChat({ history });
@@ -65,8 +65,9 @@ async function resolveLid(lid) {
     });
     if (resp.ok) {
       const data = await resp.json();
+      console.log('[lid] full response (/lids):', JSON.stringify(data));
       const pn   = data?.pn || data?.phoneNumber || null;
-      const name = data?.pushname || data?.pushName || data?.name || null;
+      const name = data?.pushname || data?.pushName || data?.name || data?.shortName || null;
       if (pn || name) resolved = { pn, name };
     }
   } catch (e) {
@@ -82,8 +83,9 @@ async function resolveLid(lid) {
       );
       if (resp.ok) {
         const data = await resp.json();
+        console.log('[lid] full response (/contacts/about):', JSON.stringify(data));
         const pn   = data?.pn || data?.phoneNumber || null;
-        const name = data?.pushname || data?.pushName || data?.name || null;
+        const name = data?.pushname || data?.pushName || data?.name || data?.shortName || null;
         if (pn || name) resolved = { pn, name };
       }
     } catch (e) {
@@ -146,11 +148,13 @@ app.post('/webhook', async (req, res) => {
   const sendTo = rawChatId;
   let displayId = rawChatId;
   let knownName = null;
+  let knownPhone = null;
 
   if (rawChatId.endsWith('@lid')) {
     const resolved = await resolveLid(rawChatId);
     if (resolved?.pn) {
-      displayId = `${resolved.pn}@c.us`;
+      knownPhone = resolved.pn;
+      displayId = resolved.pn.endsWith('@c.us') ? resolved.pn : `${resolved.pn}@c.us`;
       console.log(`[lid] resolved ${rawChatId} → ${displayId}`);
     } else {
       console.log(`[lid] could not resolve pn for ${rawChatId} (known WAHA bug), falling back to manual name/phone`);
@@ -176,7 +180,7 @@ app.post('/webhook', async (req, res) => {
   console.log(`[incoming] from=${displayId} text="${text}"`);
 
   try {
-    const reply = await askGemini(displayId, text, knownName);
+    const reply = await askGemini(displayId, text, knownName, knownPhone);
 
     if (reply.includes('[[ORDER_COMPLETE]]')) {
       const [clientMsg, orderBlock] = reply.split('[[ORDER_COMPLETE]]');
