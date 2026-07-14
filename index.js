@@ -116,10 +116,20 @@ async function fetchContactAbout(chatId) {
   }
 }
 
+function isAudioMessage(payload) {
+  return !!(
+    payload?.hasMedia &&
+    (payload?._data?.type === 'ptt' || String(payload?.media?.mimetype || '').startsWith('audio'))
+  );
+}
+
 async function downloadMedia(payload) {
-  // WAHA (NOWEB) отдаёт прямую ссылку на вложение в payload.media.url
-  const mediaUrl = payload?.media?.url;
-  if (!mediaUrl) throw new Error('no media.url in payload');
+  const rawUrl = payload?.media?.url;
+  if (!rawUrl) throw new Error('no media.url in payload');
+
+  // WAHA отдаёт media.url с внутренним портом контейнера (localhost:3000),
+  // но chef-bot обращается к WAHA снаружи, на внешнем порту 3003
+  const mediaUrl = rawUrl.replace(/^https?:\/\/[^/]+/, WAHA_URL);
 
   const resp = await fetch(mediaUrl, {
     headers: { 'X-Api-Key': WAHA_API_KEY },
@@ -146,8 +156,6 @@ async function sendText(chatId, text) {
 // POST /webhook — входящие сообщения от WAHA
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
-
-  console.log('[raw payload]', JSON.stringify(req.body, null, 2)); // TEMP DEBUG: remove after voice detection is fixed
 
   const event   = req.body?.event;
   const payload = req.body?.payload;
@@ -194,7 +202,7 @@ app.post('/webhook', async (req, res) => {
     }
   }
 
-  if (payload?.hasMedia && String(payload?.mimetype || '').startsWith('audio')) {
+  if (isAudioMessage(payload)) {
     try {
       const audioBuffer = await downloadMedia(payload);
       text = await transcribeVoice(audioBuffer);
