@@ -33,12 +33,12 @@ function todayString() {
   });
 }
 
-async function askGemini(chatId, userText) {
+async function askGemini(chatId, userText, knownName) {
   const history = getHistory(chatId);
 
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    systemInstruction: buildPrompt(todayString()),
+    systemInstruction: buildPrompt(todayString(), knownName),
   });
 
   const chat = model.startChat({ history });
@@ -49,6 +49,50 @@ async function askGemini(chatId, userText) {
   history.push({ role: 'model', parts: [{ text: reply }] });
 
   return reply;
+}
+
+// Резолвинг @lid → реальный номер и имя (WAHA известный баг: pn иногда null)
+const lidCache = new Map(); // lid → { pn, name } | null
+
+async function resolveLid(lid) {
+  if (lidCache.has(lid)) return lidCache.get(lid);
+
+  let resolved = null;
+
+  try {
+    const resp = await fetch(`${WAHA_URL}/api/${WAHA_SESSION}/lids/${encodeURIComponent(lid)}`, {
+      headers: { 'X-Api-Key': WAHA_API_KEY },
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      const pn   = data?.pn || data?.phoneNumber || null;
+      const name = data?.pushname || data?.pushName || data?.name || null;
+      if (pn || name) resolved = { pn, name };
+    }
+  } catch (e) {
+    console.error('[resolveLid] /lids failed:', e.message);
+  }
+
+  if (!resolved) {
+    try {
+      const contactId = lid.replace('@lid', '') + '@lid';
+      const resp = await fetch(
+        `${WAHA_URL}/api/contacts/about?contactId=${encodeURIComponent(contactId)}&session=${WAHA_SESSION}`,
+        { headers: { 'X-Api-Key': WAHA_API_KEY } }
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        const pn   = data?.pn || data?.phoneNumber || null;
+        const name = data?.pushname || data?.pushName || data?.name || null;
+        if (pn || name) resolved = { pn, name };
+      }
+    } catch (e) {
+      console.error('[resolveLid] /contacts/about failed:', e.message);
+    }
+  }
+
+  lidCache.set(lid, resolved);
+  return resolved;
 }
 
 async function downloadMedia(payload) {
@@ -87,14 +131,33 @@ app.post('/webhook', async (req, res) => {
 
   if (event !== 'message') return;
 
-  const chatId = payload?.from;
-  let text      = payload?.body || '';
-  let isVoice   = false;
+  const rawChatId = payload?.from;
+  let text         = payload?.body || '';
+  let isVoice      = false;
 
-  if (!chatId || chatId.endsWith('@g.us') || payload?.fromMe) return;
-  if (NATALIA_NUMBERS.includes(chatId)) {
-    console.log(`[skip] message from Natalia's own number ${chatId}`);
+  if (!rawChatId || rawChatId.endsWith('@g.us') || payload?.fromMe) return;
+  if (NATALIA_NUMBERS.includes(rawChatId)) {
+    console.log(`[skip] message from Natalia's own number ${rawChatId}`);
     return;
+  }
+
+  // sendTo — всегда исходный chatId из webhook (гарантированно валиден для WAHA sendText).
+  // displayId/knownName — резолвим из @lid, если возможно, для истории и уведомления Натали.
+  const sendTo = rawChatId;
+  let displayId = rawChatId;
+  let knownName = null;
+
+  if (rawChatId.endsWith('@lid')) {
+    const resolved = await resolveLid(rawChatId);
+    if (resolved?.pn) {
+      displayId = `${resolved.pn}@c.us`;
+      console.log(`[lid] resolved ${rawChatId} → ${displayId}`);
+    } else {
+      console.log(`[lid] could not resolve pn for ${rawChatId} (known WAHA bug), falling back to manual name/phone`);
+    }
+    if (resolved?.name) {
+      knownName = resolved.name;
+    }
   }
 
   if (payload?.hasMedia && String(payload?.mimetype || '').startsWith('audio')) {
@@ -102,34 +165,34 @@ app.post('/webhook', async (req, res) => {
       const audioBuffer = await downloadMedia(payload);
       text = await transcribeVoice(audioBuffer);
       isVoice = true;
-      console.log(`[voice] transcribed from=${chatId} text="${text}"`);
+      console.log(`[voice] transcribed from=${displayId} text="${text}"`);
     } catch (e) {
       console.error('[voice] transcription failed:', e.message);
-      await sendText(chatId, 'Извините, не удалось распознать голосовое сообщение. Пожалуйста, напишите текстом.');
+      await sendText(sendTo, 'Извините, не удалось распознать голосовое сообщение. Пожалуйста, напишите текстом.');
       return;
     }
   }
 
-  console.log(`[incoming] from=${chatId} text="${text}"`);
+  console.log(`[incoming] from=${displayId} text="${text}"`);
 
   try {
-    const reply = await askGemini(chatId, text);
+    const reply = await askGemini(displayId, text, knownName);
 
     if (reply.includes('[[ORDER_COMPLETE]]')) {
       const [clientMsg, orderBlock] = reply.split('[[ORDER_COMPLETE]]');
       // клиенту — только его часть
-      await sendText(chatId, clientMsg.trim());
+      await sendText(sendTo, clientMsg.trim());
       // Натали — структурированный заказ
-      console.log(`[order] Complete order from ${chatId} — notifying Natalia`);
+      console.log(`[order] Complete order from ${displayId} — notifying Natalia`);
       const noteBlock = isVoice ? `${orderBlock.trim()}\n\n🎤 (голосовое)` : orderBlock.trim();
-      await sendOrderToNatalia(noteBlock, chatId);
-      sessions.delete(chatId); // сбрасываем диалог после оформления
+      await sendOrderToNatalia(noteBlock, displayId);
+      sessions.delete(displayId); // сбрасываем диалог после оформления
     } else {
-      await sendText(chatId, reply.trim());
+      await sendText(sendTo, reply.trim());
     }
   } catch (e) {
     console.error('[gemini] error:', e.message);
-    await sendText(chatId, 'Извините, произошла техническая заминка. Пожалуйста, напишите ещё раз.');
+    await sendText(sendTo, 'Извините, произошла техническая заминка. Пожалуйста, напишите ещё раз.');
   }
 });
 
