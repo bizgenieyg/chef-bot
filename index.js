@@ -97,6 +97,25 @@ async function resolveLid(lid) {
   return resolved;
 }
 
+// Доп. запрос по уже резолвнутому chatId (например, 972...@c.us) —
+// пробуем добрать имя, если /lids или /contacts/about по lid его не дали
+async function fetchContactAbout(chatId) {
+  try {
+    const resp = await fetch(
+      `${WAHA_URL}/api/contacts/about?contactId=${encodeURIComponent(chatId)}&session=${WAHA_SESSION}`,
+      { headers: { 'X-Api-Key': WAHA_API_KEY } }
+    );
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    console.log('[contact] full response:', JSON.stringify(data));
+    const name = data?.pushname || data?.pushName || data?.name || data?.shortName || null;
+    return name;
+  } catch (e) {
+    console.error('[fetchContactAbout] failed:', e.message);
+    return null;
+  }
+}
+
 async function downloadMedia(payload) {
   // WAHA (NOWEB) отдаёт прямую ссылку на вложение в payload.media.url
   const mediaUrl = payload?.media?.url;
@@ -161,6 +180,15 @@ app.post('/webhook', async (req, res) => {
     }
     if (resolved?.name) {
       knownName = resolved.name;
+    }
+
+    // если имени всё ещё нет, но номер добыли — пробуем /contacts/about по реальному chatId
+    if (!knownName && displayId !== rawChatId) {
+      const aboutName = await fetchContactAbout(displayId);
+      if (aboutName) {
+        knownName = aboutName;
+        console.log(`[contact] got name from /contacts/about: ${aboutName}`);
+      }
     }
   }
 
