@@ -3,6 +3,7 @@ const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const buildPrompt = require('./prompt');
 const { sendOrderToNatalia } = require('./services/notify');
+const { transcribeVoice } = require('./services/transcribe');
 
 const app = express();
 app.use(express.json());
@@ -50,6 +51,20 @@ async function askGemini(chatId, userText) {
   return reply;
 }
 
+async function downloadMedia(payload) {
+  // WAHA (NOWEB) отдаёт прямую ссылку на вложение в payload.media.url
+  const mediaUrl = payload?.media?.url;
+  if (!mediaUrl) throw new Error('no media.url in payload');
+
+  const resp = await fetch(mediaUrl, {
+    headers: { 'X-Api-Key': WAHA_API_KEY },
+  });
+  if (!resp.ok) throw new Error(`media download failed: ${resp.status}`);
+
+  const arrayBuffer = await resp.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
 async function sendText(chatId, text) {
   try {
     const resp = await fetch(`${WAHA_URL}/api/sendText`, {
@@ -73,12 +88,26 @@ app.post('/webhook', async (req, res) => {
   if (event !== 'message') return;
 
   const chatId = payload?.from;
-  const text   = payload?.body || '';
+  let text      = payload?.body || '';
+  let isVoice   = false;
 
   if (!chatId || chatId.endsWith('@g.us') || payload?.fromMe) return;
   if (NATALIA_NUMBERS.includes(chatId)) {
     console.log(`[skip] message from Natalia's own number ${chatId}`);
     return;
+  }
+
+  if (payload?.hasMedia && String(payload?.mimetype || '').startsWith('audio')) {
+    try {
+      const audioBuffer = await downloadMedia(payload);
+      text = await transcribeVoice(audioBuffer);
+      isVoice = true;
+      console.log(`[voice] transcribed from=${chatId} text="${text}"`);
+    } catch (e) {
+      console.error('[voice] transcription failed:', e.message);
+      await sendText(chatId, 'Извините, не удалось распознать голосовое сообщение. Пожалуйста, напишите текстом.');
+      return;
+    }
   }
 
   console.log(`[incoming] from=${chatId} text="${text}"`);
@@ -92,7 +121,8 @@ app.post('/webhook', async (req, res) => {
       await sendText(chatId, clientMsg.trim());
       // Натали — структурированный заказ
       console.log(`[order] Complete order from ${chatId} — notifying Natalia`);
-      await sendOrderToNatalia(orderBlock.trim(), chatId);
+      const noteBlock = isVoice ? `${orderBlock.trim()}\n\n🎤 (голосовое)` : orderBlock.trim();
+      await sendOrderToNatalia(noteBlock, chatId);
       sessions.delete(chatId); // сбрасываем диалог после оформления
     } else {
       await sendText(chatId, reply.trim());
