@@ -4,6 +4,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const buildPrompt = require('./prompt');
 const { sendOrderToNatalia } = require('./services/notify');
 const { transcribeVoice } = require('./services/transcribe');
+const { withGeminiRetry } = require('./services/geminiRetry');
 
 const app = express();
 app.use(express.json());
@@ -43,26 +44,13 @@ async function askGemini(chatId, userText, knownName, knownPhone) {
 
   const chat = model.startChat({ history });
 
-  const delays = [1000, 3000]; // повторные попытки при временной перегрузке Gemini (503)
-  let lastError;
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    try {
-      const result = await chat.sendMessage(userText);
-      const reply = result.response.text();
+  const result = await withGeminiRetry(() => chat.sendMessage(userText), 'gemini-chat');
+  const reply = result.response.text();
 
-      history.push({ role: 'user',  parts: [{ text: userText }] });
-      history.push({ role: 'model', parts: [{ text: reply }] });
+  history.push({ role: 'user',  parts: [{ text: userText }] });
+  history.push({ role: 'model', parts: [{ text: reply }] });
 
-      return reply;
-    } catch (e) {
-      lastError = e;
-      const is503 = String(e.message || '').includes('503');
-      if (!is503 || attempt === delays.length) throw e;
-      console.warn(`[gemini] 503, retrying in ${delays[attempt]}ms (attempt ${attempt + 1}/${delays.length})`);
-      await new Promise((r) => setTimeout(r, delays[attempt]));
-    }
-  }
-  throw lastError;
+  return reply;
 }
 
 // Резолвинг @lid → реальный номер и имя (WAHA известный баг: pn иногда null)
@@ -223,8 +211,8 @@ app.post('/webhook', async (req, res) => {
       isVoice = true;
       console.log(`[voice] transcribed from=${displayId} text="${text}"`);
     } catch (e) {
-      console.error('[voice] transcription failed:', e.message);
-      await sendText(sendTo, 'Извините, не удалось распознать голосовое сообщение. Пожалуйста, напишите текстом.');
+      console.error('[voice] transcription failed after retries:', e.message);
+      await sendText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏');
       return;
     }
   }
@@ -247,8 +235,8 @@ app.post('/webhook', async (req, res) => {
       await sendText(sendTo, reply.trim());
     }
   } catch (e) {
-    console.error('[gemini] error:', e.message);
-    await sendText(sendTo, 'Извините, произошла техническая заминка. Пожалуйста, напишите ещё раз.');
+    console.error('[gemini] error after retries:', e.message);
+    await sendText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏');
   }
 });
 

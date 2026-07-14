@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { withGeminiRetry } = require('./geminiRetry');
 
 const execFileAsync = promisify(execFile);
 
@@ -22,10 +23,13 @@ async function transcribeVoice(audioBuffer) {
 
     const mp3Base64 = fs.readFileSync(mp3Path).toString('base64');
 
-    const result = await model.generateContent([
-      { text: 'Транскрибируй это голосовое сообщение на русском языке, верни только текст без комментариев.' },
-      { inlineData: { mimeType: 'audio/mp3', data: mp3Base64 } },
-    ]);
+    const result = await withGeminiRetry(
+      () => model.generateContent([
+        { text: 'Транскрибируй это голосовое сообщение на русском языке, верни только текст без комментариев.' },
+        { inlineData: { mimeType: 'audio/mp3', data: mp3Base64 } },
+      ]),
+      'gemini-transcribe'
+    );
 
     return result.response.text().trim();
   } finally {
