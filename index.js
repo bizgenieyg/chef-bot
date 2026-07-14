@@ -147,6 +147,8 @@ async function sendText(chatId, text) {
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 
+  console.log('[raw payload]', JSON.stringify(req.body, null, 2)); // TEMP DEBUG: remove after voice detection is fixed
+
   const event   = req.body?.event;
   const payload = req.body?.payload;
 
