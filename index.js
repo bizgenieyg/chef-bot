@@ -42,13 +42,27 @@ async function askGemini(chatId, userText, knownName, knownPhone) {
   });
 
   const chat = model.startChat({ history });
-  const result = await chat.sendMessage(userText);
-  const reply = result.response.text();
 
-  history.push({ role: 'user',  parts: [{ text: userText }] });
-  history.push({ role: 'model', parts: [{ text: reply }] });
+  const delays = [1000, 3000]; // повторные попытки при временной перегрузке Gemini (503)
+  let lastError;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const result = await chat.sendMessage(userText);
+      const reply = result.response.text();
 
-  return reply;
+      history.push({ role: 'user',  parts: [{ text: userText }] });
+      history.push({ role: 'model', parts: [{ text: reply }] });
+
+      return reply;
+    } catch (e) {
+      lastError = e;
+      const is503 = String(e.message || '').includes('503');
+      if (!is503 || attempt === delays.length) throw e;
+      console.warn(`[gemini] 503, retrying in ${delays[attempt]}ms (attempt ${attempt + 1}/${delays.length})`);
+      await new Promise((r) => setTimeout(r, delays[attempt]));
+    }
+  }
+  throw lastError;
 }
 
 // Резолвинг @lid → реальный номер и имя (WAHA известный баг: pn иногда null)
