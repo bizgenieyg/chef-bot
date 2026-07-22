@@ -1,10 +1,12 @@
 require('dotenv').config();
 const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const buildPrompt = require('./prompt');
+const buildSalesPrompt = require('./prompts/sales');
+const buildSupportPrompt = require('./prompts/support');
 const { sendOrderToNatalia } = require('./services/notify');
 const { transcribeVoice } = require('./services/transcribe');
 const { withGeminiRetry } = require('./services/geminiRetry');
+const { classifyIntent, matchesSupportKeywords } = require('./services/intentRouter');
 
 const app = express();
 app.use(express.json());
@@ -19,11 +21,11 @@ const NATALIA_NUMBERS = ['972587958060@c.us', '972559598952@c.us'];
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// История диалогов в памяти: chatId → [{role, parts}]
+// Состояние диалога в памяти: chatId → { history: [{role, parts}], mode: 'SALES'|'SUPPORT'|null }
 const sessions = new Map();
 
-function getHistory(chatId) {
-  if (!sessions.has(chatId)) sessions.set(chatId, []);
+function getSession(chatId) {
+  if (!sessions.has(chatId)) sessions.set(chatId, { history: [], mode: null });
   return sessions.get(chatId);
 }
 
@@ -34,21 +36,40 @@ function todayString() {
   });
 }
 
-async function askGemini(chatId, userText, knownName, knownPhone) {
-  const history = getHistory(chatId);
+const PROMPT_BUILDERS = { SALES: buildSalesPrompt, SUPPORT: buildSupportPrompt };
+const COMPLETION_TOKENS = { SALES: '[[ORDER_COMPLETE]]', SUPPORT: '[[SUPPORT_ESCALATE]]' };
+
+// Явные триггеры смены темы посреди диалога (уже в заданном режиме)
+const NEW_ORDER_TRIGGERS = [
+  /нов(ый|ое)\s+заказ/i,
+  /хочу\s+(сделать\s+)?заказать?/i,
+  /оформить\s+заказ/i,
+  /что\s+нового/i,
+  /есть\s+что(-|\s)нибудь\s+нов/i,
+];
+
+function hasExplicitTopicSwitchTrigger(text, currentMode) {
+  if (currentMode === 'SALES') return matchesSupportKeywords(text);
+  if (currentMode === 'SUPPORT') return NEW_ORDER_TRIGGERS.some((re) => re.test(text));
+  return false;
+}
+
+async function askGemini(chatId, userText, knownName, knownPhone, mode) {
+  const session = getSession(chatId);
+  const buildPromptFn = PROMPT_BUILDERS[mode] || PROMPT_BUILDERS.SALES;
 
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    systemInstruction: buildPrompt(todayString(), knownName, knownPhone),
+    systemInstruction: buildPromptFn(todayString(), knownName, knownPhone),
   });
 
-  const chat = model.startChat({ history });
+  const chat = model.startChat({ history: session.history });
 
   const result = await withGeminiRetry(() => chat.sendMessage(userText), 'gemini-chat');
   const reply = result.response.text();
 
-  history.push({ role: 'user',  parts: [{ text: userText }] });
-  history.push({ role: 'model', parts: [{ text: reply }] });
+  session.history.push({ role: 'user',  parts: [{ text: userText }] });
+  session.history.push({ role: 'model', parts: [{ text: reply }] });
 
   return reply;
 }
@@ -219,18 +240,26 @@ app.post('/webhook', async (req, res) => {
 
   console.log(`[incoming] from=${displayId} text="${text}"`);
 
-  try {
-    const reply = await askGemini(displayId, text, knownName, knownPhone);
+  const session = getSession(displayId);
 
-    if (reply.includes('[[ORDER_COMPLETE]]')) {
-      const [clientMsg, orderBlock] = reply.split('[[ORDER_COMPLETE]]');
+  if (!session.mode || hasExplicitTopicSwitchTrigger(text, session.mode)) {
+    session.mode = await classifyIntent(text, session.history);
+    console.log(`[mode] chat=${displayId} mode=${session.mode}`);
+  }
+
+  try {
+    const reply = await askGemini(displayId, text, knownName, knownPhone, session.mode);
+    const completionToken = COMPLETION_TOKENS[session.mode] || COMPLETION_TOKENS.SALES;
+
+    if (reply.includes(completionToken)) {
+      const [clientMsg, orderBlock] = reply.split(completionToken);
       // клиенту — только его часть
       await sendText(sendTo, clientMsg.trim());
-      // Натали — структурированный заказ
-      console.log(`[order] Complete order from ${displayId} — notifying Natalia`);
+      // Натали — структурированное сообщение (заказ или эскалация поддержки)
+      console.log(`[${session.mode}] complete from ${displayId} — notifying Natalia`);
       const noteBlock = isVoice ? `${orderBlock.trim()}\n\n🎤 (голосовое)` : orderBlock.trim();
       await sendOrderToNatalia(noteBlock, displayId);
-      sessions.delete(displayId); // сбрасываем диалог после оформления
+      sessions.delete(displayId); // сбрасываем диалог и режим после завершения
     } else {
       await sendText(sendTo, reply.trim());
     }

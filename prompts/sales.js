@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const knowledge = fs.readFileSync(
-  path.join(__dirname, 'data/knowledge.md'),
+  path.join(__dirname, '../data/knowledge.md'),
   'utf-8'
 );
 
