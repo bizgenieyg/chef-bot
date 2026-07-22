@@ -189,7 +189,7 @@ app.post('/webhook', async (req, res) => {
   let text         = payload?.body || '';
   let isVoice      = false;
 
-  if (!rawChatId || rawChatId.endsWith('@g.us') || payload?.fromMe) return;
+  if (!rawChatId || rawChatId.endsWith('@g.us') || rawChatId.endsWith('@broadcast') || payload?.fromMe) return;
   if (NATALIA_NUMBERS.includes(rawChatId)) {
     console.log(`[skip] message from Natalia's own number ${rawChatId}`);
     return;
