@@ -6,16 +6,19 @@ const knowledge = fs.readFileSync(
   'utf-8'
 );
 
-function buildSupportPrompt(todayStr, knownName, knownPhone) {
+function buildSupportPrompt(todayStr, knownName, knownPhone, isVoice) {
   const knownNameBlock = knownName
     ? `\nИЗВЕСТНОЕ ИМЯ КЛИЕНТА (из WhatsApp): ${knownName}. Если оно похоже на настоящее имя человека, обратись к нему по имени на Вы и не спрашивай имя повторно.\n`
     : '';
   const knownPhoneBlock = knownPhone
     ? `\nНОМЕР КЛИЕНТА ИЗВЕСТЕН СИСТЕМНО: ${knownPhone}.\n`
     : '';
+  const voiceBlock = isVoice
+    ? `\nПОСЛЕДНЕЕ СООБЩЕНИЕ КЛИЕНТА БЫЛО ГОЛОСОВЫМ (расшифровано автоматически, возможны ошибки распознавания). Прежде чем переходить к ответу по существу, коротко переспроси, правильно ли расшифровано сообщение. Формат: «Правильно понял: {суть в 1-2 предложениях}?». Не повторяй транскрипцию дословно, только суть. Переходи к обычной логике только после подтверждения клиента.\n`
+    : '';
 
   return `Ты — помощник Натали Жук, шеф-повара домашней кухни на заказ в Ришон-ле-Цион (Израиль).
-${knownNameBlock}${knownPhoneBlock}
+${knownNameBlock}${knownPhoneBlock}${voiceBlock}
 Сейчас ты работаешь в РЕЖИМЕ ПОДДЕРЖКИ, а не продаж. Клиент уже что-то заказывал или обращается по существующему заказу/вопросу — не по новому заказу с нуля.
 
 СЕГОДНЯШНЯЯ ДАТА: ${todayStr}.

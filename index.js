@@ -54,13 +54,13 @@ function hasExplicitTopicSwitchTrigger(text, currentMode) {
   return false;
 }
 
-async function askGemini(chatId, userText, knownName, knownPhone, mode) {
+async function askGemini(chatId, userText, knownName, knownPhone, mode, isVoice) {
   const session = getSession(chatId);
   const buildPromptFn = PROMPT_BUILDERS[mode] || PROMPT_BUILDERS.SALES;
 
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    systemInstruction: buildPromptFn(todayString(), knownName, knownPhone),
+    systemInstruction: buildPromptFn(todayString(), knownName, knownPhone, isVoice),
   });
 
   const chat = model.startChat({ history: session.history });
@@ -248,7 +248,7 @@ app.post('/webhook', async (req, res) => {
   }
 
   try {
-    const reply = await askGemini(displayId, text, knownName, knownPhone, session.mode);
+    const reply = await askGemini(displayId, text, knownName, knownPhone, session.mode, isVoice);
     const completionToken = COMPLETION_TOKENS[session.mode] || COMPLETION_TOKENS.SALES;
 
     if (reply.includes(completionToken)) {
