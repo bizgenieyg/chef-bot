@@ -8,6 +8,7 @@ const { transcribeVoice } = require('./services/transcribe');
 const { withGeminiRetry } = require('./services/geminiRetry');
 const { classifyIntent, matchesSupportKeywords } = require('./services/intentRouter');
 const db = require('./services/db');
+const { startReminderLoop } = require('./services/reminders');
 
 const app = express();
 app.use(express.json());
@@ -356,3 +357,5 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`chef-bot listening on port ${PORT}`));
+
+startReminderLoop();

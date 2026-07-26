@@ -25,15 +25,24 @@ escalationsDb.exec(`
     client_chat_id TEXT,
     question TEXT,
     status TEXT,
-    created_at TEXT
+    created_at TEXT,
+    reminder_count INTEGER DEFAULT 0,
+    last_reminder_at TEXT
   );
 `);
 
-// Миграция: у таблицы, созданной до введения waha_message_id, колонки не будет —
-// CREATE TABLE IF NOT EXISTS её не добавит на существующую таблицу.
+// Миграция: у таблицы, созданной до введения этих колонок, их не будет —
+// CREATE TABLE IF NOT EXISTS их не добавит на существующую таблицу.
 const escalationColumns = escalationsDb.prepare('PRAGMA table_info(escalations)').all();
-if (!escalationColumns.some((c) => c.name === 'waha_message_id')) {
+const escalationColumnNames = escalationColumns.map((c) => c.name);
+if (!escalationColumnNames.includes('waha_message_id')) {
   escalationsDb.exec('ALTER TABLE escalations ADD COLUMN waha_message_id TEXT');
+}
+if (!escalationColumnNames.includes('reminder_count')) {
+  escalationsDb.exec('ALTER TABLE escalations ADD COLUMN reminder_count INTEGER DEFAULT 0');
+}
+if (!escalationColumnNames.includes('last_reminder_at')) {
+  escalationsDb.exec('ALTER TABLE escalations ADD COLUMN last_reminder_at TEXT');
 }
 
 const insertMessageStmt = conversationsDb.prepare(
@@ -79,10 +88,27 @@ function markEscalationAnswered(id) {
   markEscalationAnsweredStmt.run(id);
 }
 
+const getPendingEscalationsStmt = escalationsDb.prepare(
+  "SELECT * FROM escalations WHERE status = 'pending'"
+);
+const bumpReminderStmt = escalationsDb.prepare(
+  'UPDATE escalations SET reminder_count = reminder_count + 1, last_reminder_at = ? WHERE id = ?'
+);
+
+function getPendingEscalations() {
+  return getPendingEscalationsStmt.all();
+}
+
+function bumpReminder(id) {
+  bumpReminderStmt.run(new Date().toISOString(), id);
+}
+
 module.exports = {
   saveMessage,
   getRecentHistory,
   createEscalation,
   getPendingEscalationByMessageId,
   markEscalationAnswered,
+  getPendingEscalations,
+  bumpReminder,
 };
