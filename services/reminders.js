@@ -7,9 +7,21 @@ const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
 const NATALIA_ASK_NUMBER = '972559598952@c.us';
 
 const CHECK_INTERVAL_MS = 10 * 60 * 1000; // каждые 10 минут
-const REMINDER_AFTER_MS = 20 * 60 * 1000; // напоминать через 20 минут ожидания
-const MAX_REMINDERS = 2;
+const REMINDER_AFTER_MS = 30 * 60 * 1000; // напоминать через 30 минут ожидания
+const MAX_REMINDERS = 2; // после 2 напоминаний без ответа — больше не напоминаем автоматически
 
+function extractWahaMessageId(sendResult) {
+  return (
+    sendResult?.id?._serialized ||
+    sendResult?._data?.id?._serialized ||
+    (typeof sendResult?.id === 'string' ? sendResult.id : null) ||
+    sendResult?.messageId ||
+    null
+  );
+}
+
+// Возвращает id только что отправленного напоминания (или null при ошибке) —
+// он становится новой "точкой привязки" для следующего реплея Натали.
 async function sendReminderReply(wahaMessageId, text) {
   try {
     const resp = await fetch(`${WAHA_URL}/api/sendText`, {
@@ -24,12 +36,13 @@ async function sendReminderReply(wahaMessageId, text) {
     });
     if (!resp.ok) {
       console.error('[reminders] sendText failed:', resp.status, await resp.text());
-      return false;
+      return null;
     }
-    return true;
+    const result = await resp.json();
+    return extractWahaMessageId(result);
   } catch (e) {
     console.error('[reminders] sendText error:', e.message);
-    return false;
+    return null;
   }
 }
 
@@ -50,14 +63,23 @@ async function checkAndSendReminders() {
       continue;
     }
 
-    const sent = await sendReminderReply(
-      escalation.waha_message_id,
-      '🔔 Напоминание — жду ответа на предыдущий вопрос от клиента 🙏'
-    );
+    // Текст напоминания включает сам вопрос — Натали не нужно листать историю,
+    // чтобы понять, о чём речь. reply_to даёт ещё и нативный "прыжок" к
+    // оригинальному сообщению по тапу на цитату в WhatsApp.
+    const reminderText =
+      `🔔 Напоминание — жду ответа на предыдущий вопрос от клиента (${escalation.client_chat_id}):\n` +
+      `«${escalation.question}»\n\n` +
+      `Ответьте реплеем на это сообщение 🙏`;
 
-    if (sent) {
-      db.bumpReminder(escalation.id);
+    const newMessageId = await sendReminderReply(escalation.waha_message_id, reminderText);
+
+    if (newMessageId) {
+      // waha_message_id обновляется на id напоминания: если Натали ответит
+      // реплеем именно на него, а не на исходный вопрос, матчинг всё равно сработает
+      db.bumpReminder(escalation.id, newMessageId);
       console.log(`[reminders] sent reminder #${escalation.reminder_count + 1} for escalation id=${escalation.id}`);
+    } else {
+      console.error(`[reminders] escalation id=${escalation.id}: reminder sent but no message id returned, waha_message_id NOT updated (next reminder will still reply to the old message)`);
     }
   }
 }

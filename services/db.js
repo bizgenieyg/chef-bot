@@ -92,15 +92,18 @@ const getPendingEscalationsStmt = escalationsDb.prepare(
   "SELECT * FROM escalations WHERE status = 'pending'"
 );
 const bumpReminderStmt = escalationsDb.prepare(
-  'UPDATE escalations SET reminder_count = reminder_count + 1, last_reminder_at = ? WHERE id = ?'
+  'UPDATE escalations SET reminder_count = reminder_count + 1, last_reminder_at = ?, waha_message_id = ? WHERE id = ?'
 );
 
 function getPendingEscalations() {
   return getPendingEscalationsStmt.all();
 }
 
-function bumpReminder(id) {
-  bumpReminderStmt.run(new Date().toISOString(), id);
+// Обновляет waha_message_id на id только что отправленного напоминания —
+// если Натали ответит реплеем на напоминание (а не на исходный вопрос),
+// матчинг всё равно сработает, т.к. ищем по последнему сообщению бота.
+function bumpReminder(id, newWahaMessageId) {
+  bumpReminderStmt.run(new Date().toISOString(), newWahaMessageId, id);
 }
 
 module.exports = {
