@@ -180,92 +180,103 @@ async function sendText(chatId, text) {
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 
-  const event   = req.body?.event;
-  const payload = req.body?.payload;
-
-  if (event !== 'message') return;
-
-  const rawChatId = payload?.from;
-  let text         = payload?.body || '';
-  let isVoice      = false;
-
-  if (!rawChatId || rawChatId.endsWith('@g.us') || rawChatId.endsWith('@broadcast') || payload?.fromMe) return;
-  if (NATALIA_NUMBERS.includes(rawChatId)) {
-    console.log(`[skip] message from Natalia's own number ${rawChatId}`);
+  // WhatsApp Статусы (Stories) — игнорируем сразу, до любой другой обработки
+  if (req.body?.payload?.from === 'status@broadcast' || String(req.body?.payload?.from || '').endsWith('@broadcast')) {
     return;
   }
 
-  // sendTo — всегда исходный chatId из webhook (гарантированно валиден для WAHA sendText).
-  // displayId/knownName — резолвим из @lid, если возможно, для истории и уведомления Натали.
-  const sendTo = rawChatId;
-  let displayId = rawChatId;
-  let knownName = null;
-  let knownPhone = null;
+  try {
+    const event   = req.body?.event;
+    const payload = req.body?.payload;
 
-  if (rawChatId.endsWith('@lid')) {
-    const resolved = await resolveLid(rawChatId);
-    if (resolved?.pn) {
-      knownPhone = resolved.pn;
-      displayId = resolved.pn.endsWith('@c.us') ? resolved.pn : `${resolved.pn}@c.us`;
-      console.log(`[lid] resolved ${rawChatId} → ${displayId}`);
-    } else {
-      console.log(`[lid] could not resolve pn for ${rawChatId} (known WAHA bug), falling back to manual name/phone`);
-    }
-    if (resolved?.name) {
-      knownName = resolved.name;
-    }
+    if (event !== 'message') return;
 
-    // если имени всё ещё нет, но номер добыли — пробуем /contacts/about по реальному chatId
-    if (!knownName && displayId !== rawChatId) {
-      const aboutName = await fetchContactAbout(displayId);
-      if (aboutName) {
-        knownName = aboutName;
-        console.log(`[contact] got name from /contacts/about: ${aboutName}`);
-      }
-    }
-  }
+    const rawChatId = payload?.from;
+    let text         = payload?.body || '';
+    let isVoice      = false;
 
-  if (isAudioMessage(payload)) {
-    try {
-      const audioBuffer = await downloadMedia(payload);
-      text = await transcribeVoice(audioBuffer);
-      isVoice = true;
-      console.log(`[voice] transcribed from=${displayId} text="${text}"`);
-    } catch (e) {
-      console.error('[voice] transcription failed after retries:', e.message);
-      await sendText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏');
+    if (!rawChatId || rawChatId.endsWith('@g.us') || payload?.fromMe) return;
+    if (NATALIA_NUMBERS.includes(rawChatId)) {
+      console.log(`[skip] message from Natalia's own number ${rawChatId}`);
       return;
     }
-  }
 
-  console.log(`[incoming] from=${displayId} text="${text}"`);
+    // sendTo — всегда исходный chatId из webhook (гарантированно валиден для WAHA sendText).
+    // displayId/knownName — резолвим из @lid, если возможно, для истории и уведомления Натали.
+    const sendTo = rawChatId;
+    let displayId = rawChatId;
+    let knownName = null;
+    let knownPhone = null;
 
-  const session = getSession(displayId);
+    if (rawChatId.endsWith('@lid')) {
+      const resolved = await resolveLid(rawChatId);
+      if (resolved?.pn) {
+        knownPhone = resolved.pn;
+        displayId = resolved.pn.endsWith('@c.us') ? resolved.pn : `${resolved.pn}@c.us`;
+        console.log(`[lid] resolved ${rawChatId} → ${displayId}`);
+      } else {
+        console.log(`[lid] could not resolve pn for ${rawChatId} (known WAHA bug), falling back to manual name/phone`);
+      }
+      if (resolved?.name) {
+        knownName = resolved.name;
+      }
 
-  if (!session.mode || hasExplicitTopicSwitchTrigger(text, session.mode)) {
-    session.mode = await classifyIntent(text, session.history);
-    console.log(`[mode] chat=${displayId} mode=${session.mode}`);
-  }
+      // если имени всё ещё нет, но номер добыли — пробуем /contacts/about по реальному chatId
+      if (!knownName && displayId !== rawChatId) {
+        const aboutName = await fetchContactAbout(displayId);
+        if (aboutName) {
+          knownName = aboutName;
+          console.log(`[contact] got name from /contacts/about: ${aboutName}`);
+        }
+      }
+    }
 
-  try {
-    const reply = await askGemini(displayId, text, knownName, knownPhone, session.mode, isVoice);
-    const completionToken = COMPLETION_TOKENS[session.mode] || COMPLETION_TOKENS.SALES;
+    if (isAudioMessage(payload)) {
+      try {
+        const audioBuffer = await downloadMedia(payload);
+        text = await transcribeVoice(audioBuffer);
+        isVoice = true;
+        console.log(`[voice] transcribed from=${displayId} text="${text}"`);
+      } catch (e) {
+        console.error('[voice] transcription failed after retries:', e.message);
+        await sendText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏');
+        return;
+      }
+    }
 
-    if (reply.includes(completionToken)) {
-      const [clientMsg, orderBlock] = reply.split(completionToken);
-      // клиенту — только его часть
-      await sendText(sendTo, clientMsg.trim());
-      // Натали — структурированное сообщение (заказ или эскалация поддержки)
-      console.log(`[${session.mode}] complete from ${displayId} — notifying Natalia`);
-      const noteBlock = isVoice ? `${orderBlock.trim()}\n\n🎤 (голосовое)` : orderBlock.trim();
-      await sendOrderToNatalia(noteBlock, displayId);
-      sessions.delete(displayId); // сбрасываем диалог и режим после завершения
-    } else {
-      await sendText(sendTo, reply.trim());
+    console.log(`[incoming] from=${displayId} text="${text}"`);
+
+    const session = getSession(displayId);
+
+    if (!session.mode || hasExplicitTopicSwitchTrigger(text, session.mode)) {
+      session.mode = await classifyIntent(text, session.history);
+      console.log(`[mode] chat=${displayId} mode=${session.mode}`);
+    }
+
+    try {
+      const reply = await askGemini(displayId, text, knownName, knownPhone, session.mode, isVoice);
+      const completionToken = COMPLETION_TOKENS[session.mode] || COMPLETION_TOKENS.SALES;
+
+      if (reply.includes(completionToken)) {
+        const [clientMsg, orderBlock] = reply.split(completionToken);
+        // клиенту — только его часть
+        await sendText(sendTo, clientMsg.trim());
+        // Натали — структурированное сообщение (заказ или эскалация поддержки)
+        console.log(`[${session.mode}] complete from ${displayId} — notifying Natalia`);
+        const noteBlock = isVoice ? `${orderBlock.trim()}\n\n🎤 (голосовое)` : orderBlock.trim();
+        await sendOrderToNatalia(noteBlock, displayId);
+        sessions.delete(displayId); // сбрасываем диалог и режим после завершения
+      } else {
+        await sendText(sendTo, reply.trim());
+      }
+    } catch (e) {
+      console.error('[gemini] error after retries:', e.message);
+      await sendText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏');
     }
   } catch (e) {
-    console.error('[gemini] error after retries:', e.message);
-    await sendText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏');
+    // Верхнеуровневая страховка: любое необработанное исключение в обработчике
+    // не должно ронять процесс (иначе PM2 уходит в цикл перезапусков).
+    console.error('[webhook] unhandled error:', e);
   }
 });
 
