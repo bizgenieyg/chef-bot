@@ -29,6 +29,13 @@ escalationsDb.exec(`
   );
 `);
 
+// Миграция: у таблицы, созданной до введения waha_message_id, колонки не будет —
+// CREATE TABLE IF NOT EXISTS её не добавит на существующую таблицу.
+const escalationColumns = escalationsDb.prepare('PRAGMA table_info(escalations)').all();
+if (!escalationColumns.some((c) => c.name === 'waha_message_id')) {
+  escalationsDb.exec('ALTER TABLE escalations ADD COLUMN waha_message_id TEXT');
+}
+
 const insertMessageStmt = conversationsDb.prepare(
   'INSERT INTO messages (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)'
 );
