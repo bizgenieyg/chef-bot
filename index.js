@@ -174,6 +174,8 @@ async function downloadMedia(payload) {
   return Buffer.from(arrayBuffer);
 }
 
+// Возвращает распарсенный JSON-ответ WAHA (содержит id отправленного сообщения)
+// или null при ошибке.
 async function sendText(chatId, text) {
   try {
     const resp = await fetch(`${WAHA_URL}/api/sendText`, {
@@ -181,27 +183,47 @@ async function sendText(chatId, text) {
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': WAHA_API_KEY },
       body: JSON.stringify({ session: WAHA_SESSION, chatId, text }),
     });
-    if (!resp.ok) console.error(`[sendText] ${resp.status}`, await resp.text());
+    if (!resp.ok) {
+      console.error(`[sendText] ${resp.status}`, await resp.text());
+      return null;
+    }
+    return await resp.json();
   } catch (e) {
     console.error('[sendText] error:', e.message);
+    return null;
   }
 }
 
-// Обрабатывает сообщение от самой Натали: если это ответ на ожидающий вопрос
-// (created via [[ASK_NATALIA: ...]]) — пересылает клиенту и закрывает эскалацию.
-// Если pending-вопросов нет — полностью игнорирует (не собирает с неё заказ).
-async function handleNataliaMessage(text) {
-  const pending = db.getPendingEscalations();
+// Достаёт id сообщения из разных возможных форм ответа WAHA
+function extractWahaMessageId(sendResult) {
+  return (
+    sendResult?.id?._serialized ||
+    sendResult?._data?.id?._serialized ||
+    (typeof sendResult?.id === 'string' ? sendResult.id : null) ||
+    sendResult?.messageId ||
+    null
+  );
+}
 
-  if (pending.length === 0) {
-    console.log('[natalia] no pending escalations, ignoring message');
+// Обрабатывает сообщение от самой Натали: пересылает клиенту, только если это
+// РЕПЛЕЙ на конкретный вопрос, отправленный через ASK_NATALIA.
+// Во всех остальных случаях (не реплей, реплей не найден в escalations) —
+// полностью игнорирует, не пытается собирать с неё заказ.
+async function handleNataliaMessage(text, payload) {
+  const replyToId = payload?.replyTo?.id;
+
+  if (!replyToId) {
+    console.log('[natalia] message is not a reply, ignoring');
+    // TODO: со временем можно добавить мягкое напоминание
+    // "пожалуйста, отвечайте реплеем на вопрос"
     return;
   }
 
-  // Несколько pending одновременно — упрощённо берём самую старую (FIFO)
-  const escalation = pending[0];
-  if (pending.length > 1) {
-    console.warn(`[natalia] ${pending.length} pending escalations, answering the oldest (id=${escalation.id})`);
+  const escalation = db.getPendingEscalationByMessageId(replyToId);
+
+  if (!escalation) {
+    console.log(`[natalia] reply to ${replyToId} does not match any pending escalation, ignoring`);
+    return;
   }
 
   await sendText(escalation.client_chat_id, `Уточнила у Натали: ${text}`);
@@ -231,7 +253,7 @@ app.post('/webhook', async (req, res) => {
     if (!rawChatId || rawChatId.endsWith('@g.us') || payload?.fromMe) return;
 
     if (NATALIA_NUMBERS.includes(rawChatId)) {
-      await handleNataliaMessage(text);
+      await handleNataliaMessage(text, payload);
       return;
     }
 
@@ -306,12 +328,19 @@ app.post('/webhook', async (req, res) => {
         const question  = askMatch[1].trim();
         const clientMsg = reply.replace(askMatch[0], '').trim();
         await sendText(sendTo, clientMsg);
-        db.createEscalation(displayId, question);
-        await sendText(
+
+        const sendResult = await sendText(
           NATALIA_ASK_NUMBER,
           `❓ Вопрос от клиента (${displayId}): ${question}\n\nОтветьте мне, и я перешлю клиенту.`
         );
-        console.log(`[ask_natalia] chat=${displayId} question="${question}"`);
+        const wahaMessageId = extractWahaMessageId(sendResult);
+
+        if (wahaMessageId) {
+          db.createEscalation(wahaMessageId, displayId, question);
+          console.log(`[ask_natalia] chat=${displayId} question="${question}" waha_message_id=${wahaMessageId}`);
+        } else {
+          console.error(`[ask_natalia] could not extract WAHA message id, escalation NOT saved (Natalia's reply won't be matched):`, JSON.stringify(sendResult));
+        }
       } else {
         await sendText(sendTo, reply.trim());
       }

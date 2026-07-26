@@ -21,6 +21,7 @@ conversationsDb.exec(`
 escalationsDb.exec(`
   CREATE TABLE IF NOT EXISTS escalations (
     id INTEGER PRIMARY KEY,
+    waha_message_id TEXT UNIQUE,
     client_chat_id TEXT,
     question TEXT,
     status TEXT,
@@ -50,21 +51,21 @@ function getRecentHistory(chatId, limit = 20) {
 }
 
 const insertEscalationStmt = escalationsDb.prepare(
-  'INSERT INTO escalations (client_chat_id, question, status, created_at) VALUES (?, ?, ?, ?)'
+  'INSERT INTO escalations (waha_message_id, client_chat_id, question, status, created_at) VALUES (?, ?, ?, ?, ?)'
 );
-const getPendingEscalationsStmt = escalationsDb.prepare(
-  "SELECT * FROM escalations WHERE status = 'pending' ORDER BY created_at ASC"
+const getEscalationByMessageIdStmt = escalationsDb.prepare(
+  'SELECT * FROM escalations WHERE waha_message_id = ? AND status = ?'
 );
 const markEscalationAnsweredStmt = escalationsDb.prepare(
   "UPDATE escalations SET status = 'answered' WHERE id = ?"
 );
 
-function createEscalation(clientChatId, question) {
-  insertEscalationStmt.run(clientChatId, question, 'pending', new Date().toISOString());
+function createEscalation(wahaMessageId, clientChatId, question) {
+  insertEscalationStmt.run(wahaMessageId, clientChatId, question, 'pending', new Date().toISOString());
 }
 
-function getPendingEscalations() {
-  return getPendingEscalationsStmt.all();
+function getPendingEscalationByMessageId(wahaMessageId) {
+  return getEscalationByMessageIdStmt.get(wahaMessageId, 'pending') || null;
 }
 
 function markEscalationAnswered(id) {
@@ -75,6 +76,6 @@ module.exports = {
   saveMessage,
   getRecentHistory,
   createEscalation,
-  getPendingEscalations,
+  getPendingEscalationByMessageId,
   markEscalationAnswered,
 };
