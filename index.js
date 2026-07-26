@@ -7,6 +7,7 @@ const { sendOrderToNatalia } = require('./services/notify');
 const { transcribeVoice } = require('./services/transcribe');
 const { withGeminiRetry } = require('./services/geminiRetry');
 const { classifyIntent, matchesSupportKeywords } = require('./services/intentRouter');
+const db = require('./services/db');
 
 const app = express();
 app.use(express.json());
@@ -18,15 +19,25 @@ const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
 
 // Номер самой Натали — её сообщения не обрабатываем как заказ клиента
 const NATALIA_NUMBERS = ['972587958060@c.us', '972559598952@c.us'];
+// Куда шлём уточняющие вопросы (ASK_NATALIA) и откуда ждём на них ответ
+const NATALIA_ASK_NUMBER = '972559598952@c.us';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Состояние диалога в памяти: chatId → { history: [{role, parts}], mode: 'SALES'|'SUPPORT'|null }
-const sessions = new Map();
+// Режим диалога в памяти: chatId → 'SALES'|'SUPPORT'|null.
+// История сообщений персистентна (SQLite, services/db.js) — переживает рестарт pm2.
+const modes = new Map();
 
-function getSession(chatId) {
-  if (!sessions.has(chatId)) sessions.set(chatId, { history: [], mode: null });
-  return sessions.get(chatId);
+function getMode(chatId) {
+  return modes.has(chatId) ? modes.get(chatId) : null;
+}
+
+function setMode(chatId, mode) {
+  modes.set(chatId, mode);
+}
+
+function resetConversation(chatId) {
+  modes.delete(chatId);
 }
 
 function todayString() {
@@ -55,7 +66,7 @@ function hasExplicitTopicSwitchTrigger(text, currentMode) {
 }
 
 async function askGemini(chatId, userText, knownName, knownPhone, mode, isVoice) {
-  const session = getSession(chatId);
+  const history = db.getRecentHistory(chatId, 20);
   const buildPromptFn = PROMPT_BUILDERS[mode] || PROMPT_BUILDERS.SALES;
 
   const model = genAI.getGenerativeModel({
@@ -63,13 +74,13 @@ async function askGemini(chatId, userText, knownName, knownPhone, mode, isVoice)
     systemInstruction: buildPromptFn(todayString(), knownName, knownPhone, isVoice),
   });
 
-  const chat = model.startChat({ history: session.history });
+  const chat = model.startChat({ history });
 
   const result = await withGeminiRetry(() => chat.sendMessage(userText), 'gemini-chat');
   const reply = result.response.text();
 
-  session.history.push({ role: 'user',  parts: [{ text: userText }] });
-  session.history.push({ role: 'model', parts: [{ text: reply }] });
+  db.saveMessage(chatId, 'user', userText);
+  db.saveMessage(chatId, 'model', reply);
 
   return reply;
 }
@@ -176,6 +187,28 @@ async function sendText(chatId, text) {
   }
 }
 
+// Обрабатывает сообщение от самой Натали: если это ответ на ожидающий вопрос
+// (created via [[ASK_NATALIA: ...]]) — пересылает клиенту и закрывает эскалацию.
+// Если pending-вопросов нет — полностью игнорирует (не собирает с неё заказ).
+async function handleNataliaMessage(text) {
+  const pending = db.getPendingEscalations();
+
+  if (pending.length === 0) {
+    console.log('[natalia] no pending escalations, ignoring message');
+    return;
+  }
+
+  // Несколько pending одновременно — упрощённо берём самую старую (FIFO)
+  const escalation = pending[0];
+  if (pending.length > 1) {
+    console.warn(`[natalia] ${pending.length} pending escalations, answering the oldest (id=${escalation.id})`);
+  }
+
+  await sendText(escalation.client_chat_id, `Уточнила у Натали: ${text}`);
+  db.markEscalationAnswered(escalation.id);
+  console.log(`[natalia] escalation id=${escalation.id} answered, forwarded to ${escalation.client_chat_id}`);
+}
+
 // POST /webhook — входящие сообщения от WAHA
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
@@ -196,8 +229,9 @@ app.post('/webhook', async (req, res) => {
     let isVoice      = false;
 
     if (!rawChatId || rawChatId.endsWith('@g.us') || payload?.fromMe) return;
+
     if (NATALIA_NUMBERS.includes(rawChatId)) {
-      console.log(`[skip] message from Natalia's own number ${rawChatId}`);
+      await handleNataliaMessage(text);
       return;
     }
 
@@ -246,26 +280,38 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`[incoming] from=${displayId} text="${text}"`);
 
-    const session = getSession(displayId);
+    let mode = getMode(displayId);
 
-    if (!session.mode || hasExplicitTopicSwitchTrigger(text, session.mode)) {
-      session.mode = await classifyIntent(text, session.history);
-      console.log(`[mode] chat=${displayId} mode=${session.mode}`);
+    if (!mode || hasExplicitTopicSwitchTrigger(text, mode)) {
+      mode = await classifyIntent(text, db.getRecentHistory(displayId, 20));
+      setMode(displayId, mode);
+      console.log(`[mode] chat=${displayId} mode=${mode}`);
     }
 
     try {
-      const reply = await askGemini(displayId, text, knownName, knownPhone, session.mode, isVoice);
-      const completionToken = COMPLETION_TOKENS[session.mode] || COMPLETION_TOKENS.SALES;
+      const reply = await askGemini(displayId, text, knownName, knownPhone, mode, isVoice);
+      const completionToken = COMPLETION_TOKENS[mode] || COMPLETION_TOKENS.SALES;
+      const askMatch = reply.match(/\[\[ASK_NATALIA:\s*([\s\S]*?)\]\]/);
 
       if (reply.includes(completionToken)) {
         const [clientMsg, orderBlock] = reply.split(completionToken);
         // клиенту — только его часть
         await sendText(sendTo, clientMsg.trim());
         // Натали — структурированное сообщение (заказ или эскалация поддержки)
-        console.log(`[${session.mode}] complete from ${displayId} — notifying Natalia`);
+        console.log(`[${mode}] complete from ${displayId} — notifying Natalia`);
         const noteBlock = isVoice ? `${orderBlock.trim()}\n\n🎤 (голосовое)` : orderBlock.trim();
         await sendOrderToNatalia(noteBlock, displayId);
-        sessions.delete(displayId); // сбрасываем диалог и режим после завершения
+        resetConversation(displayId); // сбрасываем режим после завершения
+      } else if (askMatch) {
+        const question  = askMatch[1].trim();
+        const clientMsg = reply.replace(askMatch[0], '').trim();
+        await sendText(sendTo, clientMsg);
+        db.createEscalation(displayId, question);
+        await sendText(
+          NATALIA_ASK_NUMBER,
+          `❓ Вопрос от клиента (${displayId}): ${question}\n\nОтветьте мне, и я перешлю клиенту.`
+        );
+        console.log(`[ask_natalia] chat=${displayId} question="${question}"`);
       } else {
         await sendText(sendTo, reply.trim());
       }
