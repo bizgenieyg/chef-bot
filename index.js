@@ -217,6 +217,12 @@ app.post('/webhook', async (req, res) => {
 
     if (event !== 'message') return;
 
+    console.log('[raw payload name-fields]', JSON.stringify({
+      notifyName: payload.notifyName,
+      pushName: payload.pushName,
+      _data: payload._data,
+    }, null, 2)); // TEMP DEBUG: remove after finding the real name field
+
     const rawChatId = payload?.from;
     let text         = payload?.body || '';
     let isVoice      = false;
