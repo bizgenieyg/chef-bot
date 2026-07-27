@@ -86,8 +86,10 @@ async function askGemini(chatId, userText, knownName, knownPhone, mode, isVoice)
   return reply;
 }
 
-// Резолвинг @lid → реальный номер и имя (WAHA известный баг: pn иногда null)
-const lidCache = new Map(); // lid → { pn, name } | null
+// Резолвинг @lid → реальный номер (WAHA известный баг: pn иногда null, если
+// store не был включён при старте сессии). /api/contacts/about не поддерживается
+// движком NOWEB (всегда 501) — не используем.
+const lidCache = new Map(); // lid → { pn } | null
 
 async function resolveLid(lid) {
   if (lidCache.has(lid)) return lidCache.get(lid);
@@ -101,54 +103,20 @@ async function resolveLid(lid) {
     if (resp.ok) {
       const data = await resp.json();
       console.log('[lid] full response (/lids):', JSON.stringify(data));
-      const pn   = data?.pn || data?.phoneNumber || null;
-      const name = data?.pushname || data?.pushName || data?.name || data?.shortName || null;
-      if (pn || name) resolved = { pn, name };
+      const pn = data?.pn || data?.phoneNumber || null;
+      if (pn) resolved = { pn };
     }
   } catch (e) {
     console.error('[resolveLid] /lids failed:', e.message);
-  }
-
-  if (!resolved) {
-    try {
-      const contactId = lid.replace('@lid', '') + '@lid';
-      const resp = await fetch(
-        `${WAHA_URL}/api/contacts/about?contactId=${encodeURIComponent(contactId)}&session=${WAHA_SESSION}`,
-        { headers: { 'X-Api-Key': WAHA_API_KEY } }
-      );
-      if (resp.ok) {
-        const data = await resp.json();
-        console.log('[lid] full response (/contacts/about):', JSON.stringify(data));
-        const pn   = data?.pn || data?.phoneNumber || null;
-        const name = data?.pushname || data?.pushName || data?.name || data?.shortName || null;
-        if (pn || name) resolved = { pn, name };
-      }
-    } catch (e) {
-      console.error('[resolveLid] /contacts/about failed:', e.message);
-    }
   }
 
   lidCache.set(lid, resolved);
   return resolved;
 }
 
-// Доп. запрос по уже резолвнутому chatId (например, 972...@c.us) —
-// пробуем добрать имя, если /lids или /contacts/about по lid его не дали
-async function fetchContactAbout(chatId) {
-  try {
-    const resp = await fetch(
-      `${WAHA_URL}/api/contacts?contactId=${encodeURIComponent(chatId)}&session=${WAHA_SESSION}`,
-      { headers: { 'X-Api-Key': WAHA_API_KEY } }
-    );
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    console.log('[contact] full response:', JSON.stringify(data));
-    const name = data?.shortName || data?.name || null;
-    return name;
-  } catch (e) {
-    console.error('[fetchContactAbout] failed:', e.message);
-    return null;
-  }
+// Имя клиента приходит прямо в payload входящего сообщения — отдельный запрос не нужен
+function extractNotifyName(payload) {
+  return payload?._data?.notifyName || payload?.notifyName || payload?.pushName || null;
 }
 
 function isAudioMessage(payload) {
@@ -259,10 +227,11 @@ app.post('/webhook', async (req, res) => {
     }
 
     // sendTo — всегда исходный chatId из webhook (гарантированно валиден для WAHA sendText).
-    // displayId/knownName — резолвим из @lid, если возможно, для истории и уведомления Натали.
+    // displayId — резолвим номер из @lid, если возможно, для истории и уведомления Натали.
+    // knownName — берётся прямо из payload входящего сообщения, отдельный запрос не нужен.
     const sendTo = rawChatId;
     let displayId = rawChatId;
-    let knownName = null;
+    let knownName = extractNotifyName(payload);
     let knownPhone = null;
 
     if (rawChatId.endsWith('@lid')) {
@@ -272,19 +241,7 @@ app.post('/webhook', async (req, res) => {
         displayId = resolved.pn.endsWith('@c.us') ? resolved.pn : `${resolved.pn}@c.us`;
         console.log(`[lid] resolved ${rawChatId} → ${displayId}`);
       } else {
-        console.log(`[lid] could not resolve pn for ${rawChatId} (known WAHA bug), falling back to manual name/phone`);
-      }
-      if (resolved?.name) {
-        knownName = resolved.name;
-      }
-
-      // если имени всё ещё нет, но номер добыли — пробуем /contacts/about по реальному chatId
-      if (!knownName && displayId !== rawChatId) {
-        const aboutName = await fetchContactAbout(displayId);
-        if (aboutName) {
-          knownName = aboutName;
-          console.log(`[contact] got name from /contacts/about: ${aboutName}`);
-        }
+        console.log(`[lid] could not resolve pn for ${rawChatId} (known WAHA bug, will work once store is enabled on session start), falling back to manual name/phone`);
       }
     }
 
