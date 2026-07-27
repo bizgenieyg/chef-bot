@@ -86,9 +86,10 @@ async function askGemini(chatId, userText, knownName, knownPhone, mode, isVoice)
   return reply;
 }
 
-// Резолвинг @lid → реальный номер (WAHA известный баг: pn иногда null, если
-// store не был включён при старте сессии). /api/contacts/about не поддерживается
-// движком NOWEB (всегда 501) — не используем.
+// Резолвинг @lid → реальный номер через WAHA. Сразу после рестарта сессии
+// store иногда ещё не успевает синхронизироваться, и pn может прийти null —
+// в этом случае просто падаем на ручной сбор имени/телефона у клиента.
+// /api/contacts/about не поддерживается движком NOWEB (всегда 501) — не используем.
 const lidCache = new Map(); // lid → { pn } | null
 
 async function resolveLid(lid) {
@@ -96,23 +97,19 @@ async function resolveLid(lid) {
 
   let resolved = null;
 
-  const url = `${WAHA_URL}/api/${WAHA_SESSION}/lids/${encodeURIComponent(lid)}`;
   try {
-    console.log('[lid] request url:', url);
-    const resp = await fetch(url, {
+    const resp = await fetch(`${WAHA_URL}/api/${WAHA_SESSION}/lids/${encodeURIComponent(lid)}`, {
       headers: { 'X-Api-Key': WAHA_API_KEY },
     });
-    console.log('[lid] response status:', resp.status);
-    const body = await resp.text();
-    console.log('[lid] response body:', body);
-
     if (resp.ok) {
-      const data = JSON.parse(body);
+      const data = await resp.json();
       const pn = data?.pn || data?.phoneNumber || null;
       if (pn) resolved = { pn };
+    } else {
+      console.warn(`[resolveLid] /lids returned ${resp.status} for ${lid}`);
     }
   } catch (e) {
-    console.log('[lid] fetch threw:', e.message);
+    console.error('[resolveLid] /lids failed:', e.message);
   }
 
   lidCache.set(lid, resolved);
