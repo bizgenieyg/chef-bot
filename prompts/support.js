@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { readLearnedAnswers } = require('../services/learnedAnswers');
 
 const knowledge = fs.readFileSync(
   path.join(__dirname, '../data/knowledge.md'),
@@ -7,6 +8,11 @@ const knowledge = fs.readFileSync(
 );
 
 function buildSupportPrompt(todayStr, knownName, knownPhone, isVoice) {
+  const learnedAnswers = readLearnedAnswers();
+  const learnedAnswersBlock = learnedAnswers
+    ? `\n\n=== НАКОПЛЕННЫЕ УТОЧНЕНИЯ ОТ НАТАЛИ (learned-answers.md) ===\n${learnedAnswers}===================\n`
+    : '';
+
   const knownNameBlock = knownName
     ? `\nИЗВЕСТНОЕ ИМЯ КЛИЕНТА (из WhatsApp): ${knownName}. Если оно похоже на настоящее имя человека, обратись к нему по имени на Вы и не спрашивай имя повторно.\n`
     : '';
@@ -48,6 +54,8 @@ ${knownNameBlock}${knownPhoneBlock}${voiceBlock}
 === БАЗА ЗНАНИЙ (меню, цены, условия) ===
 ${knowledge}
 ===================
+${learnedAnswersBlock}
+Проверяй также раздел "НАКОПЛЕННЫЕ УТОЧНЕНИЯ ОТ НАТАЛИ" выше (если он есть) — там накопленные ответы Натали на вопросы, которых нет в основном меню. Используй их как источник истины наравне с базой знаний.
 
 ФОРМАТ УВЕДОМЛЕНИЯ НАТАЛИ (только если ситуация требует её внимания, см. пункт 3):
 Когда решаешь, что нужно передать обращение Натали, выведи ответ РОВНО в такой структуре:

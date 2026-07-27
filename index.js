@@ -9,6 +9,8 @@ const { withGeminiRetry } = require('./services/geminiRetry');
 const { classifyIntent, matchesSupportKeywords } = require('./services/intentRouter');
 const db = require('./services/db');
 const { startReminderLoop } = require('./services/reminders');
+const { NATALIA_PERSONAL_NUMBER, NATALIA_NUMBERS } = require('./services/natalia');
+const { appendLearnedAnswer } = require('./services/learnedAnswers');
 
 const app = express();
 app.use(express.json());
@@ -17,11 +19,6 @@ const PORT         = 3006;
 const WAHA_URL     = 'http://localhost:3003';
 const WAHA_API_KEY = process.env.WAHA_API_KEY || 'blaster123';
 const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
-
-// Номер самой Натали — её сообщения не обрабатываем как заказ клиента
-const NATALIA_NUMBERS = ['972587958060@c.us', '972559598952@c.us'];
-// Куда шлём уточняющие вопросы (ASK_NATALIA) и откуда ждём на них ответ
-const NATALIA_ASK_NUMBER = '972559598952@c.us';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -201,6 +198,7 @@ async function handleNataliaMessage(text, payload) {
 
   await sendText(escalation.client_chat_id, `Уточнила у Натали: ${text}`);
   db.markEscalationAnswered(escalation.id);
+  appendLearnedAnswer(escalation.question, text);
   console.log(`[natalia] escalation id=${escalation.id} answered, forwarded to ${escalation.client_chat_id}`);
 }
 
@@ -225,14 +223,11 @@ app.post('/webhook', async (req, res) => {
 
     if (!rawChatId || rawChatId.endsWith('@g.us') || payload?.fromMe) return;
 
-    if (NATALIA_NUMBERS.includes(rawChatId)) {
-      await handleNataliaMessage(text, payload);
-      return;
-    }
-
     // sendTo — всегда исходный chatId из webhook (гарантированно валиден для WAHA sendText).
     // displayId — резолвим номер из @lid, если возможно, для истории и уведомления Натали.
     // knownName — берётся прямо из payload входящего сообщения, отдельный запрос не нужен.
+    // Резолвим ДО проверки NATALIA_NUMBERS: если Натали пишет с номера, который
+    // WhatsApp показал как @lid, сырой rawChatId не совпадёт со списком, а резолвнутый — совпадёт.
     const sendTo = rawChatId;
     let displayId = rawChatId;
     let knownName = extractNotifyName(payload);
@@ -247,6 +242,13 @@ app.post('/webhook', async (req, res) => {
       } else {
         console.log(`[lid] could not resolve pn for ${rawChatId} (known WAHA bug, will work once store is enabled on session start), falling back to manual name/phone`);
       }
+    }
+
+    // Сравниваем и с резолвнутым номером, и с исходным rawChatId — на случай,
+    // если резолвинг не удался, а номер и так пришёл в формате @c.us.
+    if (NATALIA_NUMBERS.includes(displayId) || NATALIA_NUMBERS.includes(rawChatId)) {
+      await handleNataliaMessage(text, payload);
+      return;
     }
 
     if (isAudioMessage(payload)) {
@@ -292,7 +294,7 @@ app.post('/webhook', async (req, res) => {
         await sendText(sendTo, clientMsg);
 
         const sendResult = await sendText(
-          NATALIA_ASK_NUMBER,
+          NATALIA_PERSONAL_NUMBER,
           `❓ Вопрос от клиента (${displayId}): ${question}\n\nОтветьте мне, и я перешлю клиенту.`
         );
         const wahaMessageId = extractWahaMessageId(sendResult);

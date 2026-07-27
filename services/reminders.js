@@ -1,10 +1,10 @@
 require('dotenv').config();
 const db = require('./db');
+const { NATALIA_PERSONAL_NUMBER } = require('./natalia');
 
 const WAHA_URL     = 'http://localhost:3003';
 const WAHA_API_KEY = process.env.WAHA_API_KEY || 'blaster123';
 const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
-const NATALIA_ASK_NUMBER = '972559598952@c.us';
 
 const CHECK_INTERVAL_MS = 10 * 60 * 1000; // каждые 10 минут
 const REMINDER_AFTER_MS = 30 * 60 * 1000; // напоминать через 30 минут ожидания
@@ -29,7 +29,7 @@ async function sendReminderReply(wahaMessageId, text) {
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': WAHA_API_KEY },
       body: JSON.stringify({
         session: WAHA_SESSION,
-        chatId: NATALIA_ASK_NUMBER,
+        chatId: NATALIA_PERSONAL_NUMBER,
         text,
         reply_to: wahaMessageId,
       }),

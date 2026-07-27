@@ -15,7 +15,12 @@ async function withGeminiRetry(fn, label = 'gemini') {
       return await fn();
     } catch (e) {
       lastError = e;
-      if (!is5xxError(e) || attempt === RETRY_DELAYS_MS.length) throw e;
+      if (!is5xxError(e) || attempt === RETRY_DELAYS_MS.length) {
+        if (attempt === RETRY_DELAYS_MS.length) {
+          console.log(`[${label}] all retries exhausted, last error:`, e?.status, e?.message);
+        }
+        throw e;
+      }
       const delay = RETRY_DELAYS_MS[attempt];
       console.warn(`[${label}] 5xx error, retrying in ${delay}ms (attempt ${attempt + 1}/${RETRY_DELAYS_MS.length}):`, e.message);
       await new Promise((r) => setTimeout(r, delay));

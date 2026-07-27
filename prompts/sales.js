@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { readLearnedAnswers } = require('../services/learnedAnswers');
 
 const knowledge = fs.readFileSync(
   path.join(__dirname, '../data/knowledge.md'),
@@ -7,6 +8,13 @@ const knowledge = fs.readFileSync(
 );
 
 function buildPrompt(todayStr, knownName, knownPhone, isVoice) {
+  // Читается заново при каждом вызове (не при старте процесса), чтобы свежие
+  // ответы Натали подхватывались сразу, без рестарта pm2.
+  const learnedAnswers = readLearnedAnswers();
+  const learnedAnswersBlock = learnedAnswers
+    ? `\n\n=== НАКОПЛЕННЫЕ УТОЧНЕНИЯ ОТ НАТАЛИ (learned-answers.md) ===\n${learnedAnswers}===================\n`
+    : '';
+
   const knownNameBlock = knownName
     ? `\nИЗВЕСТНОЕ ИМЯ КЛИЕНТА (из WhatsApp): ${knownName}. Если оно похоже на настоящее имя человека, обратись к нему по имени на Вы (например «Здравствуйте, ${knownName}!») и не спрашивай имя повторно.\n`
     : '';
@@ -48,6 +56,8 @@ ${knownNameBlock}${knownPhoneBlock}${voiceBlock}
 === БАЗА ЗНАНИЙ ===
 ${knowledge}
 ===================
+${learnedAnswersBlock}
+Проверяй также раздел "НАКОПЛЕННЫЕ УТОЧНЕНИЯ ОТ НАТАЛИ" выше (если он есть) — там накопленные ответы Натали на вопросы, которых нет в основном меню. Используй их как источник истины наравне с базой знаний.
 
 КЛЮЧЕВЫЕ ОГРАНИЧЕНИЯ (соблюдать строго):
 - Заказы принимаются заранее: минимум за неделю, лучше за две. Заказ «на завтра»/«на сегодня» невозможен, потому что Натали закупает продукты свежими под конкретный заказ и не держит готовых блюд.
