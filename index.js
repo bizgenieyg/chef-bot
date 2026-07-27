@@ -116,9 +116,11 @@ async function resolveLid(lid) {
   return resolved;
 }
 
-// Имя клиента приходит прямо в payload входящего сообщения — отдельный запрос не нужен
+// Имя клиента приходит прямо в payload входящего сообщения — отдельный запрос не нужен.
+// На движке NOWEB (Baileys) реальное поле — payload._data.pushName (проверено на
+// живом payload). Остальные варианты оставлены как фолбэк на случай других движков.
 function extractNotifyName(payload) {
-  return payload?._data?.notifyName || payload?.notifyName || payload?.pushName || null;
+  return payload?._data?.pushName || payload?.notifyName || payload?.pushName || payload?._data?.notifyName || null;
 }
 
 function isAudioMessage(payload) {
@@ -216,12 +218,6 @@ app.post('/webhook', async (req, res) => {
     const payload = req.body?.payload;
 
     if (event !== 'message') return;
-
-    console.log('[raw payload name-fields]', JSON.stringify({
-      notifyName: payload.notifyName,
-      pushName: payload.pushName,
-      _data: payload._data,
-    }, null, 2)); // TEMP DEBUG: remove after finding the real name field
 
     const rawChatId = payload?.from;
     let text         = payload?.body || '';
