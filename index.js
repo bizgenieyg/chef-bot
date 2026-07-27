@@ -96,18 +96,23 @@ async function resolveLid(lid) {
 
   let resolved = null;
 
+  const url = `${WAHA_URL}/api/${WAHA_SESSION}/lids/${encodeURIComponent(lid)}`;
   try {
-    const resp = await fetch(`${WAHA_URL}/api/${WAHA_SESSION}/lids/${encodeURIComponent(lid)}`, {
+    console.log('[lid] request url:', url);
+    const resp = await fetch(url, {
       headers: { 'X-Api-Key': WAHA_API_KEY },
     });
+    console.log('[lid] response status:', resp.status);
+    const body = await resp.text();
+    console.log('[lid] response body:', body);
+
     if (resp.ok) {
-      const data = await resp.json();
-      console.log('[lid] full response (/lids):', JSON.stringify(data));
+      const data = JSON.parse(body);
       const pn = data?.pn || data?.phoneNumber || null;
       if (pn) resolved = { pn };
     }
   } catch (e) {
-    console.error('[resolveLid] /lids failed:', e.message);
+    console.log('[lid] fetch threw:', e.message);
   }
 
   lidCache.set(lid, resolved);
