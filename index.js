@@ -114,10 +114,19 @@ async function resolveLid(lid) {
 }
 
 // Имя клиента приходит прямо в payload входящего сообщения — отдельный запрос не нужен.
-// На движке NOWEB (Baileys) реальное поле — payload._data.pushName (проверено на
-// живом payload). Остальные варианты оставлены как фолбэк на случай других движков.
+// Поле отличается в зависимости от движка WAHA:
+// - GOWS: payload._data.Info.PushName (проверено на живом payload от 30 июля)
+// - NOWEB (Baileys): payload._data.pushName
+// Остальные варианты — фолбэк на случай будущей смены движка.
 function extractNotifyName(payload) {
-  return payload?._data?.pushName || payload?.notifyName || payload?.pushName || payload?._data?.notifyName || null;
+  return (
+    payload?._data?.Info?.PushName ||
+    payload?._data?.pushName ||
+    payload?.notifyName ||
+    payload?.pushName ||
+    payload?._data?.notifyName ||
+    null
+  );
 }
 
 function isAudioMessage(payload) {
@@ -205,8 +214,6 @@ async function handleNataliaMessage(text, payload) {
 // POST /webhook — входящие сообщения от WAHA
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
-
-  console.log('[raw GOWS payload]', JSON.stringify(req.body, null, 2)); // TEMP DEBUG
 
   // WhatsApp Статусы (Stories) — игнорируем сразу, до любой другой обработки
   if (req.body?.payload?.from === 'status@broadcast' || String(req.body?.payload?.from || '').endsWith('@broadcast')) {
