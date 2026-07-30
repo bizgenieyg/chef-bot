@@ -206,6 +206,8 @@ async function handleNataliaMessage(text, payload) {
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 
+  console.log('[raw GOWS payload]', JSON.stringify(req.body, null, 2)); // TEMP DEBUG
+
   // WhatsApp Статусы (Stories) — игнорируем сразу, до любой другой обработки
   if (req.body?.payload?.from === 'status@broadcast' || String(req.body?.payload?.from || '').endsWith('@broadcast')) {
     return;
