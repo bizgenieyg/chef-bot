@@ -10,8 +10,10 @@ const CHECK_INTERVAL_MS = 10 * 60 * 1000; // каждые 10 минут
 const REMINDER_AFTER_MS = 30 * 60 * 1000; // напоминать через 30 минут ожидания
 const MAX_REMINDERS = 2; // после 2 напоминаний без ответа — больше не напоминаем автоматически
 
+// Короткий _data.Info.ID (GOWS) в приоритете — см. комментарий в index.js
 function extractWahaMessageId(sendResult) {
   return (
+    sendResult?._data?.Info?.ID ||
     sendResult?.id?._serialized ||
     sendResult?._data?.id?._serialized ||
     (typeof sendResult?.id === 'string' ? sendResult.id : null) ||

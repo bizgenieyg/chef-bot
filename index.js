@@ -173,9 +173,13 @@ async function sendText(chatId, text) {
   }
 }
 
-// Достаёт id сообщения из разных возможных форм ответа WAHA
+// Достаёт id сообщения из разных возможных форм ответа WAHA.
+// На движке GOWS входящий payload.replyTo.id — это КОРОТКИЙ id (_data.Info.ID),
+// а не составной sendResult.id вида "true_<chat>_<id>" — проверено на живом payload
+// (30 июля). Короткий id должен быть в приоритете, иначе реплеи Натали не матчатся.
 function extractWahaMessageId(sendResult) {
   return (
+    sendResult?._data?.Info?.ID ||
     sendResult?.id?._serialized ||
     sendResult?._data?.id?._serialized ||
     (typeof sendResult?.id === 'string' ? sendResult.id : null) ||
@@ -189,7 +193,6 @@ function extractWahaMessageId(sendResult) {
 // Во всех остальных случаях (не реплей, реплей не найден в escalations) —
 // полностью игнорирует, не пытается собирать с неё заказ.
 async function handleNataliaMessage(text, payload) {
-  console.log('[natalia] TEMP DEBUG payload.replyTo:', JSON.stringify(payload?.replyTo, null, 2));
   const replyToId = payload?.replyTo?.id;
 
   if (!replyToId) {
@@ -307,7 +310,6 @@ app.post('/webhook', async (req, res) => {
           NATALIA_PERSONAL_NUMBER,
           `❓ Вопрос от клиента (${displayId}): ${question}\n\nОтветьте мне, и я перешлю клиенту.`
         );
-        console.log('[ask_natalia] TEMP DEBUG sendResult:', JSON.stringify(sendResult, null, 2));
         const wahaMessageId = extractWahaMessageId(sendResult);
 
         if (wahaMessageId) {
