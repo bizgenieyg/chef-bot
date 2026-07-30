@@ -11,6 +11,7 @@ const db = require('./services/db');
 const { startReminderLoop } = require('./services/reminders');
 const { NATALIA_PERSONAL_NUMBER, NATALIA_NUMBERS } = require('./services/natalia');
 const { appendLearnedAnswer } = require('./services/learnedAnswers');
+const { summarizeQuestion, craftFollowUp } = require('./services/nataliaReplyFormatter');
 
 const app = express();
 app.use(express.json());
@@ -209,7 +210,14 @@ async function handleNataliaMessage(text, payload) {
     return;
   }
 
-  await sendText(escalation.client_chat_id, `Уточнила у Натали: ${text}`);
+  const [questionSummary, followUp] = await Promise.all([
+    summarizeQuestion(escalation.question),
+    craftFollowUp(escalation.question, text),
+  ]);
+
+  const clientMessage = `Уточнила у Натали насчёт ${questionSummary}:\n\n«${text}»\n\n${followUp}`;
+
+  await sendText(escalation.client_chat_id, clientMessage);
   db.markEscalationAnswered(escalation.id);
   appendLearnedAnswer(escalation.question, text);
   console.log(`[natalia] escalation id=${escalation.id} answered, forwarded to ${escalation.client_chat_id}`);
