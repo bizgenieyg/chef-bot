@@ -67,10 +67,11 @@ function hasExplicitTopicSwitchTrigger(text, currentMode) {
 async function askGemini(chatId, userText, knownName, knownPhone, mode, isVoice) {
   const history = db.getRecentHistory(chatId, 20);
   const buildPromptFn = PROMPT_BUILDERS[mode] || PROMPT_BUILDERS.SALES;
+  const pendingQuestions = db.getPendingEscalationsByClient(chatId);
 
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    systemInstruction: buildPromptFn(todayString(), knownName, knownPhone, isVoice),
+    systemInstruction: buildPromptFn(todayString(), knownName, knownPhone, isVoice, pendingQuestions),
   });
 
   const chat = model.startChat({ history });

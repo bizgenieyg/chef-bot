@@ -99,6 +99,16 @@ function getPendingEscalations() {
   return getPendingEscalationsStmt.all();
 }
 
+const getPendingEscalationsByClientStmt = escalationsDb.prepare(
+  "SELECT question FROM escalations WHERE client_chat_id = ? AND status = 'pending'"
+);
+
+// Открытые вопросы конкретного клиента к Натали — источник истины для промпта:
+// модель не должна помнить "жду ответа" сама по себе, только по этому списку.
+function getPendingEscalationsByClient(clientChatId) {
+  return getPendingEscalationsByClientStmt.all(clientChatId).map((r) => r.question);
+}
+
 // Обновляет waha_message_id на id только что отправленного напоминания —
 // если Натали ответит реплеем на напоминание (а не на исходный вопрос),
 // матчинг всё равно сработает, т.к. ищем по последнему сообщению бота.
@@ -113,5 +123,6 @@ module.exports = {
   getPendingEscalationByMessageId,
   markEscalationAnswered,
   getPendingEscalations,
+  getPendingEscalationsByClient,
   bumpReminder,
 };

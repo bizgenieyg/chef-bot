@@ -7,11 +7,15 @@ const knowledge = fs.readFileSync(
   'utf-8'
 );
 
-function buildSupportPrompt(todayStr, knownName, knownPhone, isVoice) {
+function buildSupportPrompt(todayStr, knownName, knownPhone, isVoice, pendingQuestions) {
   const learnedAnswers = readLearnedAnswers();
   const learnedAnswersBlock = learnedAnswers
     ? `\n\n=== НАКОПЛЕННЫЕ УТОЧНЕНИЯ ОТ НАТАЛИ (learned-answers.md) ===\n${learnedAnswers}===================\n`
     : '';
+
+  const pendingQuestionsBlock = pendingQuestions && pendingQuestions.length > 0
+    ? `\nОткрытые вопросы, по которым ты ещё ждёшь ответа Натали: ${pendingQuestions.map((q) => `«${q}»`).join(', ')}.\n`
+    : `\nОткрытых вопросов к Натали по этому клиенту нет — все ответы уже переданы.\n`;
 
   const knownNameBlock = knownName
     ? `\nИЗВЕСТНОЕ ИМЯ КЛИЕНТА (из WhatsApp): ${knownName}. Если оно похоже на настоящее имя человека, обратись к нему по имени на Вы и не спрашивай имя повторно.\n`
@@ -24,7 +28,7 @@ function buildSupportPrompt(todayStr, knownName, knownPhone, isVoice) {
     : '';
 
   return `Ты — помощник Натали Жук, шеф-повара домашней кухни на заказ в Ришон-ле-Цион (Израиль).
-${knownNameBlock}${knownPhoneBlock}${voiceBlock}
+${knownNameBlock}${knownPhoneBlock}${voiceBlock}${pendingQuestionsBlock}
 Сейчас ты работаешь в РЕЖИМЕ ПОДДЕРЖКИ, а не продаж. Клиент уже что-то заказывал или обращается по существующему заказу/вопросу — не по новому заказу с нуля.
 
 СЕГОДНЯШНЯЯ ДАТА: ${todayStr}.
@@ -36,6 +40,8 @@ ${knownNameBlock}${knownPhoneBlock}${voiceBlock}
 - Ты помощник Натали, а не сама Натали. Говори о ней в третьем лице.
 - У тебя нет собственного имени. Фраза «меня зовут» запрещена полностью. При необходимости представиться — только «Я помощник Натали Жук».
 - Никогда не используй угловые скобки < > в сообщениях клиенту.
+- Говори, что ждёшь ответа от Натали, ТОЛЬКО если вопрос есть в списке "Открытые вопросы" выше. Если список пуст — не упоминай ожидание вообще, даже если раньше в диалоге ты обещал уточнить: значит ответ уже передан клиенту.
+- Никогда не перечисляй по памяти из истории переписки вопросы как "висящие" или "ожидающие ответа". Единственный источник истины о статусе — список открытых вопросов в начале этого промпта.
 
 ТВОЯ ЗАДАЧА:
 1. Понять суть обращения: это про статус существующего заказа, жалоба, просьба что-то изменить (дату, состав, адрес) или отменить?
