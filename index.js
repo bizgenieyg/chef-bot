@@ -189,6 +189,7 @@ function extractWahaMessageId(sendResult) {
 // Во всех остальных случаях (не реплей, реплей не найден в escalations) —
 // полностью игнорирует, не пытается собирать с неё заказ.
 async function handleNataliaMessage(text, payload) {
+  console.log('[natalia] TEMP DEBUG payload.replyTo:', JSON.stringify(payload?.replyTo, null, 2));
   const replyToId = payload?.replyTo?.id;
 
   if (!replyToId) {
@@ -306,6 +307,7 @@ app.post('/webhook', async (req, res) => {
           NATALIA_PERSONAL_NUMBER,
           `❓ Вопрос от клиента (${displayId}): ${question}\n\nОтветьте мне, и я перешлю клиенту.`
         );
+        console.log('[ask_natalia] TEMP DEBUG sendResult:', JSON.stringify(sendResult, null, 2));
         const wahaMessageId = extractWahaMessageId(sendResult);
 
         if (wahaMessageId) {
