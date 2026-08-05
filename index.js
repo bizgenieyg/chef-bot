@@ -190,6 +190,30 @@ function extractWahaMessageId(sendResult) {
   );
 }
 
+// Явный отказ/уход клиента — если это последнее сообщение клиента в чате,
+// пересылать ему запоздалый ответ Натали не нужно (выглядит как реклама вдогонку).
+const FAREWELL_PATTERNS = [
+  /закаж(у|ем).{0,20}(в другом месте|у других|в другом заведении|где)/i,
+  /перед[уе]мал/i,
+  /не буду заказывать/i,
+  /не нужно,?\s*спасибо/i,
+  /нет,?\s*спасибо/i,
+  /в друг(ой|ое) раз/i,
+  /не актуально/i,
+  /отмен(ить|яю|а)/i,
+  /всё,?\s*спасибо/i,
+  /расхотел/i,
+  /уже заказал/i,
+];
+
+function clientAppearsToHaveLeft(clientChatId) {
+  const history = db.getRecentHistory(clientChatId, 6);
+  const lastUserMsg = [...history].reverse().find((m) => m.role === 'user');
+  if (!lastUserMsg) return false;
+  const text = lastUserMsg.parts?.[0]?.text || '';
+  return FAREWELL_PATTERNS.some((re) => re.test(text));
+}
+
 // Обрабатывает сообщение от самой Натали: пересылает клиенту, только если это
 // РЕПЛЕЙ на конкретный вопрос, отправленный через ASK_NATALIA.
 // Во всех остальных случаях (не реплей, реплей не найден в escalations) —
@@ -208,6 +232,13 @@ async function handleNataliaMessage(text, payload) {
 
   if (!escalation) {
     console.log(`[natalia] reply to ${replyToId} does not match any pending escalation, ignoring`);
+    return;
+  }
+
+  if (clientAppearsToHaveLeft(escalation.client_chat_id)) {
+    db.markEscalationAnswered(escalation.id);
+    appendLearnedAnswer(escalation.question, text);
+    console.log(`[natalia] escalation id=${escalation.id} answered, but client appears to have left the conversation — NOT forwarding (saved to learned-answers.md only)`);
     return;
   }
 
