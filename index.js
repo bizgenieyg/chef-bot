@@ -11,7 +11,8 @@ const db = require('./services/db');
 const { startReminderLoop } = require('./services/reminders');
 const { NATALIA_PERSONAL_NUMBER, NATALIA_NUMBERS } = require('./services/natalia');
 const { appendLearnedAnswer } = require('./services/learnedAnswers');
-const { summarizeQuestion, craftFollowUp } = require('./services/nataliaReplyFormatter');
+const { summarizeQuestion, craftFollowUp, classifyNataliaReply } = require('./services/nataliaReplyFormatter');
+const { isQuietHours, nextNineAmJerusalem } = require('./services/jerusalemTime');
 
 const app = express();
 app.use(express.json());
@@ -64,14 +65,14 @@ function hasExplicitTopicSwitchTrigger(text, currentMode) {
   return false;
 }
 
-async function askGemini(chatId, userText, knownName, knownPhone, mode, isVoice) {
+async function askGemini(chatId, userText, knownName, knownPhone, mode, isVoice, quietHours) {
   const history = db.getRecentHistory(chatId, 20);
   const buildPromptFn = PROMPT_BUILDERS[mode] || PROMPT_BUILDERS.SALES;
   const pendingQuestions = db.getPendingEscalationsByClient(chatId);
 
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    systemInstruction: buildPromptFn(todayString(), knownName, knownPhone, isVoice, pendingQuestions),
+    systemInstruction: buildPromptFn(todayString(), knownName, knownPhone, isVoice, pendingQuestions, quietHours),
   });
 
   const chat = model.startChat({ history });
@@ -242,6 +243,22 @@ async function handleNataliaMessage(text, payload) {
     return;
   }
 
+  const classification = await classifyNataliaReply(escalation.question, text);
+
+  if (classification === 'DEFER') {
+    const newDeferredCount = escalation.deferred_count + 1;
+
+    if (newDeferredCount >= 3) {
+      db.requeueEscalation(escalation.id, null);
+      console.log(`[natalia] escalation id=${escalation.id} deferred ${newDeferredCount} times — giving up on auto-followup, left queued for manual review`);
+    } else {
+      const scheduledFor = nextNineAmJerusalem().toISOString();
+      db.requeueEscalation(escalation.id, scheduledFor);
+      console.log(`[natalia] escalation id=${escalation.id} deferred (count=${newDeferredCount}), rescheduled for ${scheduledFor}`);
+    }
+    return; // клиенту ничего не пересылаем, Натали не отвечаем
+  }
+
   const [questionSummary, followUp] = await Promise.all([
     summarizeQuestion(escalation.question),
     craftFollowUp(escalation.question, text),
@@ -328,9 +345,10 @@ app.post('/webhook', async (req, res) => {
     }
 
     try {
-      const reply = await askGemini(displayId, text, knownName, knownPhone, mode, isVoice);
+      const quietHours = isQuietHours();
+      const reply = await askGemini(displayId, text, knownName, knownPhone, mode, isVoice, quietHours);
       const completionToken = COMPLETION_TOKENS[mode] || COMPLETION_TOKENS.SALES;
-      const askMatch = reply.match(/\[\[ASK_NATALIA:\s*([\s\S]*?)\]\]/);
+      const askMatches = [...reply.matchAll(/\[\[ASK_NATALIA:\s*([\s\S]*?)\]\]/g)];
 
       if (reply.includes(completionToken)) {
         const [clientMsg, orderBlock] = reply.split(completionToken);
@@ -341,22 +359,34 @@ app.post('/webhook', async (req, res) => {
         const noteBlock = isVoice ? `${orderBlock.trim()}\n\n🎤 (голосовое)` : orderBlock.trim();
         await sendOrderToNatalia(noteBlock, displayId);
         resetConversation(displayId); // сбрасываем режим после завершения
-      } else if (askMatch) {
-        const question  = askMatch[1].trim();
-        const clientMsg = reply.replace(askMatch[0], '').trim();
+      } else if (askMatches.length > 0) {
+        // ОДНА эскалация = ОДИН вопрос: если модель задала несколько вопросов сразу,
+        // отправляем Натали отдельными сообщениями — иначе один её ответ закрыл бы всё разом.
+        const clientMsg = reply.replace(/\[\[ASK_NATALIA:\s*[\s\S]*?\]\]/g, '').trim();
         await sendText(sendTo, clientMsg);
 
-        const sendResult = await sendText(
-          NATALIA_PERSONAL_NUMBER,
-          `❓ Вопрос от клиента (${displayId}): ${question}\n\nОтветьте мне, и я перешлю клиенту.`
-        );
-        const wahaMessageId = extractWahaMessageId(sendResult);
+        for (const match of askMatches) {
+          const question = match[1].trim();
 
-        if (wahaMessageId) {
-          db.createEscalation(wahaMessageId, displayId, question);
-          console.log(`[ask_natalia] chat=${displayId} question="${question}" waha_message_id=${wahaMessageId}`);
-        } else {
-          console.error(`[ask_natalia] could not extract WAHA message id, escalation NOT saved (Natalia's reply won't be matched):`, JSON.stringify(sendResult));
+          if (quietHours) {
+            const scheduledFor = nextNineAmJerusalem().toISOString();
+            db.createQueuedEscalation(displayId, question, scheduledFor);
+            console.log(`[ask_natalia] queued (quiet hours) chat=${displayId} question="${question}" scheduled_for=${scheduledFor}`);
+            continue;
+          }
+
+          const sendResult = await sendText(
+            NATALIA_PERSONAL_NUMBER,
+            `❓ Вопрос от клиента (${displayId}): ${question}\n\nОтветьте мне, и я перешлю клиенту.`
+          );
+          const wahaMessageId = extractWahaMessageId(sendResult);
+
+          if (wahaMessageId) {
+            db.createPendingEscalation(wahaMessageId, displayId, question);
+            console.log(`[ask_natalia] chat=${displayId} question="${question}" waha_message_id=${wahaMessageId}`);
+          } else {
+            console.error(`[ask_natalia] could not extract WAHA message id, escalation NOT saved (Natalia's reply won't be matched):`, JSON.stringify(sendResult));
+          }
         }
       } else {
         await sendText(sendTo, reply.trim());

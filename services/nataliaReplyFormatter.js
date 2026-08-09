@@ -62,4 +62,25 @@ ${knowledge}
   }
 }
 
-module.exports = { summarizeQuestion, craftFollowUp };
+// Определяет, ответила ли Натали по существу или отсрочила ответ (позже, завтра,
+// спокойной ночи, занята и т.п.). Фолбэк при сбое Gemini — ANSWER: безопаснее переслать
+// сомнительный ответ клиенту, чем зациклить тикет на requeue из-за временной ошибки API.
+async function classifyNataliaReply(question, nataliaAnswer) {
+  const prompt = `Это ответ по существу на вопрос «${question}» или отсрочка/отговорка (например "позже", "завтра отвечу", "спокойной ночи", "занята сейчас")? Текст Натали: "${nataliaAnswer}"
+
+Ответь одним словом: ANSWER или DEFER.`;
+
+  try {
+    const result = await withGeminiRetry(
+      () => model.generateContent(prompt),
+      'gemini-classify-natalia-reply'
+    );
+    const answer = result.response.text().trim().toUpperCase();
+    return answer.includes('DEFER') ? 'DEFER' : 'ANSWER';
+  } catch (e) {
+    console.error('[nataliaReply] classifyNataliaReply failed, defaulting to ANSWER:', e.message);
+    return 'ANSWER';
+  }
+}
+
+module.exports = { summarizeQuestion, craftFollowUp, classifyNataliaReply };

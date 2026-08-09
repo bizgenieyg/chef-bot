@@ -18,6 +18,8 @@ conversationsDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
 `);
 
+// status: 'queued' (создан, Натали ещё не отправлен — тихие часы или ждёт повторной отправки
+//         после отсрочки) | 'pending' (отправлен, ждём ответа) | 'answered'
 escalationsDb.exec(`
   CREATE TABLE IF NOT EXISTS escalations (
     id INTEGER PRIMARY KEY,
@@ -27,7 +29,10 @@ escalationsDb.exec(`
     status TEXT,
     created_at TEXT,
     reminder_count INTEGER DEFAULT 0,
-    last_reminder_at TEXT
+    last_reminder_at TEXT,
+    scheduled_for TEXT,
+    sent_at TEXT,
+    deferred_count INTEGER DEFAULT 0
   );
 `);
 
@@ -43,6 +48,15 @@ if (!escalationColumnNames.includes('reminder_count')) {
 }
 if (!escalationColumnNames.includes('last_reminder_at')) {
   escalationsDb.exec('ALTER TABLE escalations ADD COLUMN last_reminder_at TEXT');
+}
+if (!escalationColumnNames.includes('scheduled_for')) {
+  escalationsDb.exec('ALTER TABLE escalations ADD COLUMN scheduled_for TEXT');
+}
+if (!escalationColumnNames.includes('sent_at')) {
+  escalationsDb.exec('ALTER TABLE escalations ADD COLUMN sent_at TEXT');
+}
+if (!escalationColumnNames.includes('deferred_count')) {
+  escalationsDb.exec('ALTER TABLE escalations ADD COLUMN deferred_count INTEGER DEFAULT 0');
 }
 
 const insertMessageStmt = conversationsDb.prepare(
@@ -66,8 +80,11 @@ function getRecentHistory(chatId, limit = 20) {
   }));
 }
 
-const insertEscalationStmt = escalationsDb.prepare(
-  'INSERT INTO escalations (waha_message_id, client_chat_id, question, status, created_at) VALUES (?, ?, ?, ?, ?)'
+const insertQueuedEscalationStmt = escalationsDb.prepare(
+  "INSERT INTO escalations (client_chat_id, question, status, created_at, scheduled_for, deferred_count) VALUES (?, ?, 'queued', ?, ?, 0)"
+);
+const insertPendingEscalationStmt = escalationsDb.prepare(
+  "INSERT INTO escalations (waha_message_id, client_chat_id, question, status, created_at, sent_at, deferred_count) VALUES (?, ?, ?, 'pending', ?, ?, 0)"
 );
 const getEscalationByMessageIdStmt = escalationsDb.prepare(
   'SELECT * FROM escalations WHERE waha_message_id = ? AND status = ?'
@@ -76,8 +93,16 @@ const markEscalationAnsweredStmt = escalationsDb.prepare(
   "UPDATE escalations SET status = 'answered' WHERE id = ?"
 );
 
-function createEscalation(wahaMessageId, clientChatId, question) {
-  insertEscalationStmt.run(wahaMessageId, clientChatId, question, 'pending', new Date().toISOString());
+// Тихие часы / первичная отправка ещё не удалась — вопрос создан, но Натали пока не отправлен
+function createQueuedEscalation(clientChatId, question, scheduledFor) {
+  const now = new Date().toISOString();
+  insertQueuedEscalationStmt.run(clientChatId, question, now, scheduledFor);
+}
+
+// Рабочее время — вопрос отправлен Натали сразу
+function createPendingEscalation(wahaMessageId, clientChatId, question) {
+  const now = new Date().toISOString();
+  insertPendingEscalationStmt.run(wahaMessageId, clientChatId, question, now, now);
 }
 
 function getPendingEscalationByMessageId(wahaMessageId) {
@@ -99,14 +124,15 @@ function getPendingEscalations() {
   return getPendingEscalationsStmt.all();
 }
 
-const getPendingEscalationsByClientStmt = escalationsDb.prepare(
-  "SELECT question FROM escalations WHERE client_chat_id = ? AND status = 'pending'"
+const getOpenEscalationsByClientStmt = escalationsDb.prepare(
+  "SELECT question FROM escalations WHERE client_chat_id = ? AND status IN ('queued', 'pending')"
 );
 
-// Открытые вопросы конкретного клиента к Натали — источник истины для промпта:
-// модель не должна помнить "жду ответа" сама по себе, только по этому списку.
+// Открытые вопросы конкретного клиента к Натали (и ещё не отправленные, и отправленные,
+// но без ответа) — источник истины для промпта: модель не должна помнить "жду ответа"
+// сама по себе, только по этому списку.
 function getPendingEscalationsByClient(clientChatId) {
-  return getPendingEscalationsByClientStmt.all(clientChatId).map((r) => r.question);
+  return getOpenEscalationsByClientStmt.all(clientChatId).map((r) => r.question);
 }
 
 // Обновляет waha_message_id на id только что отправленного напоминания —
@@ -116,13 +142,45 @@ function bumpReminder(id, newWahaMessageId) {
   bumpReminderStmt.run(new Date().toISOString(), newWahaMessageId, id);
 }
 
+const getDueQueuedEscalationsStmt = escalationsDb.prepare(
+  "SELECT * FROM escalations WHERE status = 'queued' AND scheduled_for IS NOT NULL AND scheduled_for <= ?"
+);
+
+// Отложенные вопросы, чьё время (scheduled_for) уже наступило — их пора отправить Натали
+function getDueQueuedEscalations() {
+  return getDueQueuedEscalationsStmt.all(new Date().toISOString());
+}
+
+const markEscalationSentStmt = escalationsDb.prepare(
+  "UPDATE escalations SET status = 'pending', waha_message_id = ?, sent_at = ? WHERE id = ?"
+);
+
+// Переводит queued → pending после фактической отправки (утренняя рассылка)
+function markEscalationSent(id, wahaMessageId) {
+  markEscalationSentStmt.run(wahaMessageId, new Date().toISOString(), id);
+}
+
+const requeueEscalationStmt = escalationsDb.prepare(
+  "UPDATE escalations SET status = 'queued', scheduled_for = ?, deferred_count = deferred_count + 1 WHERE id = ?"
+);
+
+// Натали отсрочила ответ ("отвечу позже") — возвращаем в очередь.
+// scheduledFor = null означает "висит без даты, до ручного разбора" (deferred_count >= 3).
+function requeueEscalation(id, scheduledFor) {
+  requeueEscalationStmt.run(scheduledFor, id);
+}
+
 module.exports = {
   saveMessage,
   getRecentHistory,
-  createEscalation,
+  createQueuedEscalation,
+  createPendingEscalation,
   getPendingEscalationByMessageId,
   markEscalationAnswered,
   getPendingEscalations,
   getPendingEscalationsByClient,
   bumpReminder,
+  getDueQueuedEscalations,
+  markEscalationSent,
+  requeueEscalation,
 };
