@@ -13,9 +13,11 @@ const { NATALIA_PERSONAL_NUMBER, NATALIA_NUMBERS } = require('./services/natalia
 const { appendLearnedAnswer } = require('./services/learnedAnswers');
 const { summarizeQuestion, craftFollowUp, classifyNataliaReply } = require('./services/nataliaReplyFormatter');
 const { isQuietHours, nextNineAmJerusalem } = require('./services/jerusalemTime');
+const reconnectRouter = require('./routes/reconnect');
 
 const app = express();
 app.use(express.json());
+app.use('/reconnect', reconnectRouter);
 
 const PORT         = 3006;
 const WAHA_URL     = 'http://localhost:3003';
