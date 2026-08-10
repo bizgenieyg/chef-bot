@@ -15,10 +15,14 @@ async function sendOrderToNatalia(orderBlock, clientChatId) {
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': WAHA_API_KEY },
       body: JSON.stringify({ session: WAHA_SESSION, chatId: NATALIA_PERSONAL_NUMBER, text }),
     });
+    if (resp.status === 429) {
+      console.error('[soft-ban-watch] 429 Too Many Requests in [notify]');
+    }
     if (!resp.ok) {
       console.error('[notify] failed:', resp.status, await resp.text());
     } else {
-      console.log(`[notify] Order sent to Natalia (client ${clientChatId})`);
+      const result = await resp.json();
+      console.log(`[notify] Order sent to Natalia (client ${clientChatId}), ack=${result?.ack ?? result?._data?.Status ?? 'unknown'}`);
     }
   } catch (e) {
     console.error('[notify] error:', e.message);

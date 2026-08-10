@@ -36,11 +36,15 @@ async function sendToNatalia(text, replyToId) {
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': WAHA_API_KEY },
       body: JSON.stringify(body),
     });
+    if (resp.status === 429) {
+      console.error('[soft-ban-watch] 429 Too Many Requests in [reminders]');
+    }
     if (!resp.ok) {
       console.error('[reminders] sendText failed:', resp.status, await resp.text());
       return null;
     }
     const result = await resp.json();
+    console.log(`[delivery] reminders sendText ack=${result?.ack ?? result?._data?.Status ?? 'unknown'}`);
     return extractWahaMessageId(result);
   } catch (e) {
     console.error('[reminders] sendText error:', e.message);

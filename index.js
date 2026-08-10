@@ -158,24 +158,125 @@ async function downloadMedia(payload) {
   return Buffer.from(arrayBuffer);
 }
 
+// Мониторинг мягкого бана: 3+ подряд неудачных отправки → пауза на 5 минут + уведомление.
+const SOFT_BAN_THRESHOLD    = 3;
+const SOFT_BAN_COOLDOWN_MS  = 5 * 60 * 1000;
+let consecutiveSendFailures = 0;
+let sendingPausedUntil      = 0;
+
+// Уведомление шлём напрямую, в обход sendText/паузы — иначе само уведомление
+// заблокировало бы себя же только что установленной паузой.
+async function notifySoftBan(failureCount) {
+  try {
+    await fetch(`${WAHA_URL}/api/sendText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': WAHA_API_KEY },
+      body: JSON.stringify({
+        session: WAHA_SESSION,
+        chatId: NATALIA_PERSONAL_NUMBER,
+        text: `⚠️ chef-bot: ${failureCount} подряд неудачных отправки сообщений. Похоже, WhatsApp-сессия работает нестабильно (мягкий бан или обрыв связи). Отправка приостановлена на 5 минут, затем бот попробует снова сам. Проверьте /reconnect, если не восстановится.`,
+      }),
+    });
+  } catch (e) {
+    console.error('[soft-ban-watch] failed to notify Natalia (WAHA скорее всего недоступна полностью):', e.message);
+  }
+}
+
+function registerSendFailure(chatId, reason) {
+  consecutiveSendFailures++;
+  console.warn(`[soft-ban-watch] consecutive send failures: ${consecutiveSendFailures} (last reason: ${reason}, chat: ${chatId})`);
+
+  if (consecutiveSendFailures >= SOFT_BAN_THRESHOLD) {
+    sendingPausedUntil = Date.now() + SOFT_BAN_COOLDOWN_MS;
+    console.error(`[soft-ban-watch] threshold reached — pausing sends until ${new Date(sendingPausedUntil).toISOString()}`);
+    notifySoftBan(consecutiveSendFailures);
+    consecutiveSendFailures = 0; // не спамить уведомлениями на каждой следующей попытке
+  }
+}
+
 // Возвращает распарсенный JSON-ответ WAHA (содержит id отправленного сообщения)
 // или null при ошибке.
 async function sendText(chatId, text) {
+  if (Date.now() < sendingPausedUntil) {
+    console.warn(`[soft-ban-watch] sending paused until ${new Date(sendingPausedUntil).toISOString()}, skipping send to ${chatId}`);
+    return null;
+  }
+
   try {
     const resp = await fetch(`${WAHA_URL}/api/sendText`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': WAHA_API_KEY },
       body: JSON.stringify({ session: WAHA_SESSION, chatId, text }),
     });
+
+    if (resp.status === 429) {
+      console.error(`[soft-ban-watch] 429 Too Many Requests sending to ${chatId}`);
+    }
+
     if (!resp.ok) {
       console.error(`[sendText] ${resp.status}`, await resp.text());
+      registerSendFailure(chatId, resp.status);
       return null;
     }
-    return await resp.json();
+
+    consecutiveSendFailures = 0;
+    const result = await resp.json();
+    console.log(`[delivery] sent to ${chatId}, ack=${result?.ack ?? result?._data?.Status ?? 'unknown'}`);
+    return result;
   } catch (e) {
     console.error('[sendText] error:', e.message);
+    registerSendFailure(chatId, 'network-error');
     return null;
   }
+}
+
+function randomDelayMs(minMs, maxMs) {
+  return minMs + Math.random() * (maxMs - minMs);
+}
+
+async function markSeen(chatId, messageId) {
+  try {
+    const body = { session: WAHA_SESSION, chatId };
+    if (messageId) body.messageId = messageId;
+    await fetch(`${WAHA_URL}/api/sendSeen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': WAHA_API_KEY },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    console.error('[humanize] sendSeen failed:', e.message);
+  }
+}
+
+async function setTyping(chatId, typing) {
+  try {
+    await fetch(`${WAHA_URL}/api/${typing ? 'startTyping' : 'stopTyping'}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': WAHA_API_KEY },
+      body: JSON.stringify({ session: WAHA_SESSION, chatId }),
+    });
+  } catch (e) {
+    console.error(`[humanize] ${typing ? 'start' : 'stop'}Typing failed:`, e.message);
+  }
+}
+
+// Имитация человеческого поведения перед ответом клиенту: пометить входящее прочитанным,
+// пауза 2-4с, индикатор набора пропорционально длине ответа (не больше ~8с), отправка.
+// incomingMessageId опционален — если нет (например пересылка ответа Натали, а не реакция
+// на свежее сообщение клиента), просто пропускаем sendSeen.
+async function sendHumanizedText(chatId, text, incomingMessageId) {
+  if (incomingMessageId) {
+    await markSeen(chatId, incomingMessageId);
+  }
+
+  await new Promise((r) => setTimeout(r, randomDelayMs(2000, 4000)));
+
+  await setTyping(chatId, true);
+  const typingMs = Math.min(8000, Math.max(1000, text.length * 50));
+  await new Promise((r) => setTimeout(r, typingMs));
+  await setTyping(chatId, false);
+
+  return sendText(chatId, text);
 }
 
 // Достаёт id сообщения из разных возможных форм ответа WAHA.
@@ -268,7 +369,7 @@ async function handleNataliaMessage(text, payload) {
 
   const clientMessage = `Уточнила у Натали насчёт ${questionSummary}:\n\n«${text}»\n\n${followUp}`;
 
-  await sendText(escalation.client_chat_id, clientMessage);
+  await sendHumanizedText(escalation.client_chat_id, clientMessage);
   db.markEscalationAnswered(escalation.id);
   appendLearnedAnswer(escalation.question, text);
   console.log(`[natalia] escalation id=${escalation.id} answered, forwarded to ${escalation.client_chat_id}`);
@@ -290,6 +391,7 @@ app.post('/webhook', async (req, res) => {
     if (event !== 'message') return;
 
     const rawChatId = payload?.from;
+    const incomingMessageId = payload?.id || null;
     let text         = payload?.body || '';
     let isVoice      = false;
 
@@ -331,7 +433,7 @@ app.post('/webhook', async (req, res) => {
         console.log(`[voice] transcribed from=${displayId} text="${text}"`);
       } catch (e) {
         console.error('[voice] transcription failed after retries:', e.message);
-        await sendText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏');
+        await sendHumanizedText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏', incomingMessageId);
         return;
       }
     }
@@ -355,7 +457,7 @@ app.post('/webhook', async (req, res) => {
       if (reply.includes(completionToken)) {
         const [clientMsg, orderBlock] = reply.split(completionToken);
         // клиенту — только его часть
-        await sendText(sendTo, clientMsg.trim());
+        await sendHumanizedText(sendTo, clientMsg.trim(), incomingMessageId);
         // Натали — структурированное сообщение (заказ или эскалация поддержки)
         console.log(`[${mode}] complete from ${displayId} — notifying Natalia`);
         const noteBlock = isVoice ? `${orderBlock.trim()}\n\n🎤 (голосовое)` : orderBlock.trim();
@@ -365,7 +467,7 @@ app.post('/webhook', async (req, res) => {
         // ОДНА эскалация = ОДИН вопрос: если модель задала несколько вопросов сразу,
         // отправляем Натали отдельными сообщениями — иначе один её ответ закрыл бы всё разом.
         const clientMsg = reply.replace(/\[\[ASK_NATALIA:\s*[\s\S]*?\]\]/g, '').trim();
-        await sendText(sendTo, clientMsg);
+        await sendHumanizedText(sendTo, clientMsg, incomingMessageId);
 
         for (const match of askMatches) {
           const question = match[1].trim();
@@ -391,11 +493,11 @@ app.post('/webhook', async (req, res) => {
           }
         }
       } else {
-        await sendText(sendTo, reply.trim());
+        await sendHumanizedText(sendTo, reply.trim(), incomingMessageId);
       }
     } catch (e) {
       console.error('[gemini] error after retries:', e.message);
-      await sendText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏');
+      await sendHumanizedText(sendTo, 'Прошу прощения, сейчас небольшая техническая заминка. Пожалуйста, напишите ещё раз через минуту 🙏', incomingMessageId);
     }
   } catch (e) {
     // Верхнеуровневая страховка: любое необработанное исключение в обработчике
