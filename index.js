@@ -14,13 +14,13 @@ const { appendLearnedAnswer } = require('./services/learnedAnswers');
 const { summarizeQuestion, craftFollowUp, classifyNataliaReply } = require('./services/nataliaReplyFormatter');
 const { isQuietHours, nextNineAmJerusalem } = require('./services/jerusalemTime');
 const reconnectRouter = require('./routes/reconnect');
+const { WAHA_URL } = require('./services/config');
 
 const app = express();
 app.use(express.json());
 app.use('/reconnect', reconnectRouter);
 
 const PORT         = 3006;
-const WAHA_URL     = 'http://localhost:3003';
 const WAHA_API_KEY = process.env.WAHA_API_KEY || 'blaster123';
 const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
 
@@ -145,9 +145,11 @@ async function downloadMedia(payload) {
   const rawUrl = payload?.media?.url;
   if (!rawUrl) throw new Error('no media.url in payload');
 
-  // WAHA отдаёт media.url с внутренним портом контейнера (localhost:3000),
-  // но chef-bot обращается к WAHA снаружи, на внешнем порту 3003
-  const mediaUrl = rawUrl.replace(/^https?:\/\/[^/]+/, WAHA_URL);
+  // WAHA отдаёт media.url с собственным внутренним хостом/портом (например
+  // http://localhost:3000/api/files/...), а chef-bot обращается к WAHA снаружи
+  // по WAHA_URL — берём из присланного URL только path+query, хост подставляем свой.
+  const parsedRawUrl = new URL(rawUrl);
+  const mediaUrl = WAHA_URL + parsedRawUrl.pathname + parsedRawUrl.search;
 
   const resp = await fetch(mediaUrl, {
     headers: { 'X-Api-Key': WAHA_API_KEY },

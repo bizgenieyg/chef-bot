@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { NATALIA_PERSONAL_NUMBER } = require('./natalia');
+const { WAHA_URL } = require('./config');
 
-const WAHA_URL     = 'http://localhost:3003';
 const WAHA_API_KEY = process.env.WAHA_API_KEY || 'blaster123';
 const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
 

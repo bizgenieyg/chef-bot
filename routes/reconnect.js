@@ -1,7 +1,7 @@
 const express = require('express');
+const { WAHA_URL } = require('../services/config');
 const router = express.Router();
 
-const WAHA_URL     = 'http://localhost:3003';
 const WAHA_API_KEY = process.env.WAHA_API_KEY || 'blaster123';
 const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
 const RECONNECT_PASSWORD = process.env.RECONNECT_PASSWORD;

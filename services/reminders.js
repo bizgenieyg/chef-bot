@@ -2,8 +2,8 @@ require('dotenv').config();
 const db = require('./db');
 const { NATALIA_PERSONAL_NUMBER } = require('./natalia');
 const { isQuietHours } = require('./jerusalemTime');
+const { WAHA_URL } = require('./config');
 
-const WAHA_URL     = 'http://localhost:3003';
 const WAHA_API_KEY = process.env.WAHA_API_KEY || 'blaster123';
 const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
 
