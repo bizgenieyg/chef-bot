@@ -170,6 +170,33 @@ function requeueEscalation(id, scheduledFor) {
   requeueEscalationStmt.run(scheduledFor, id);
 }
 
+const getChatIdsInRangeStmt = conversationsDb.prepare(
+  'SELECT DISTINCT chat_id FROM messages WHERE timestamp >= ? AND timestamp < ? ORDER BY chat_id'
+);
+
+// Все чаты, в которых были сообщения за период [startIso, endIso) — для дневного отчёта.
+function getChatIdsWithMessagesInRange(startIso, endIso) {
+  return getChatIdsInRangeStmt.all(startIso, endIso).map((r) => r.chat_id);
+}
+
+const getMessagesForChatInRangeStmt = conversationsDb.prepare(
+  'SELECT role, content, timestamp FROM messages WHERE chat_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY id ASC'
+);
+
+// Переписка одного чата за период, в хронологическом порядке — для анализа Gemini.
+function getMessagesForChatInRange(chatId, startIso, endIso) {
+  return getMessagesForChatInRangeStmt.all(chatId, startIso, endIso);
+}
+
+const getAllOpenEscalationsStmt = escalationsDb.prepare(
+  "SELECT * FROM escalations WHERE status IN ('queued', 'pending') ORDER BY created_at ASC"
+);
+
+// Все открытые вопросы (независимо от клиента) — для раздела "Открытые вопросы" в отчёте.
+function getAllOpenEscalations() {
+  return getAllOpenEscalationsStmt.all();
+}
+
 module.exports = {
   saveMessage,
   getRecentHistory,
@@ -183,4 +210,7 @@ module.exports = {
   getDueQueuedEscalations,
   markEscalationSent,
   requeueEscalation,
+  getChatIdsWithMessagesInRange,
+  getMessagesForChatInRange,
+  getAllOpenEscalations,
 };

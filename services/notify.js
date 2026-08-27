@@ -1,13 +1,13 @@
 require('dotenv').config();
 const { NATALIA_PERSONAL_NUMBER } = require('./natalia');
-const { WAHA_URL } = require('./config');
+const { WAHA_URL, formatPhone } = require('./config');
 
 const WAHA_API_KEY = process.env.WAHA_API_KEY || 'blaster123';
 const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
 
 async function sendOrderToNatalia(orderBlock, clientChatId) {
   // clientChatId для связи (WhatsApp), телефон клиента уже внутри orderBlock
-  const text = `${orderBlock}\n\n💬 WhatsApp клиента: ${clientChatId}`;
+  const text = `${orderBlock}\n\n💬 WhatsApp клиента: ${formatPhone(clientChatId)}`;
 
   try {
     const resp = await fetch(`${WAHA_URL}/api/sendText`, {

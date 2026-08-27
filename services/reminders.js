@@ -2,7 +2,8 @@ require('dotenv').config();
 const db = require('./db');
 const { NATALIA_PERSONAL_NUMBER } = require('./natalia');
 const { isQuietHours } = require('./jerusalemTime');
-const { WAHA_URL } = require('./config');
+const { WAHA_URL, formatPhone } = require('./config');
+const { buildAndSendDailyReport } = require('./dailyReport');
 
 const WAHA_API_KEY = process.env.WAHA_API_KEY || 'blaster123';
 const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
@@ -59,7 +60,7 @@ async function sendMorningBatch() {
 
   for (const escalation of due) {
     const messageId = await sendToNatalia(
-      `❓ Вопрос от клиента (${escalation.client_chat_id}): ${escalation.question}\n\nОтветьте мне, и я перешлю клиенту.`
+      `❓ Вопрос от клиента (${formatPhone(escalation.client_chat_id)}): ${escalation.question}\n\nОтветьте мне, и я перешлю клиенту.`
     );
 
     if (messageId) {
@@ -96,7 +97,7 @@ async function checkAndSendReminders() {
     // чтобы понять, о чём речь. reply_to даёт ещё и нативный "прыжок" к
     // оригинальному сообщению по тапу на цитату в WhatsApp.
     const reminderText =
-      `🔔 Напоминание — жду ответа на предыдущий вопрос от клиента (${escalation.client_chat_id}):\n` +
+      `🔔 Напоминание — жду ответа на предыдущий вопрос от клиента (${formatPhone(escalation.client_chat_id)}):\n` +
       `«${escalation.question}»\n\n` +
       `Ответьте реплеем на это сообщение 🙏`;
 
@@ -115,6 +116,8 @@ async function checkAndSendReminders() {
 
 function startReminderLoop() {
   setInterval(() => {
+    // Отчёт за вчера — до отправки отложенных вопросов, как и договаривались
+    buildAndSendDailyReport().catch((e) => console.error('[daily-report] loop error:', e));
     sendMorningBatch().catch((e) => console.error('[reminders] morning batch error:', e));
     checkAndSendReminders().catch((e) => console.error('[reminders] loop error:', e));
   }, CHECK_INTERVAL_MS);

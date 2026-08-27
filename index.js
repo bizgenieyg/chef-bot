@@ -14,7 +14,7 @@ const { appendLearnedAnswer } = require('./services/learnedAnswers');
 const { summarizeQuestion, craftFollowUp, classifyNataliaReply } = require('./services/nataliaReplyFormatter');
 const { isQuietHours, nextNineAmJerusalem } = require('./services/jerusalemTime');
 const reconnectRouter = require('./routes/reconnect');
-const { WAHA_URL } = require('./services/config');
+const { WAHA_URL, formatPhone } = require('./services/config');
 
 const app = express();
 app.use(express.json());
@@ -483,7 +483,7 @@ app.post('/webhook', async (req, res) => {
 
           const sendResult = await sendText(
             NATALIA_PERSONAL_NUMBER,
-            `❓ Вопрос от клиента (${displayId}): ${question}\n\nОтветьте мне, и я перешлю клиенту.`
+            `❓ Вопрос от клиента (${formatPhone(displayId)}): ${question}\n\nОтветьте мне, и я перешлю клиенту.`
           );
           const wahaMessageId = extractWahaMessageId(sendResult);
 

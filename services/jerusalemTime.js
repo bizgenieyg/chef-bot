@@ -45,4 +45,30 @@ function nextNineAmJerusalem(date = new Date()) {
   return candidate;
 }
 
-module.exports = { isQuietHours, isBusinessHours, nextNineAmJerusalem };
+// Дата по Иерусалиму в формате YYYY-MM-DD — ключ для дедупликации/меток отчётов.
+function jerusalemDateString(date = new Date()) {
+  const { year, month, day } = jerusalemPartsNow(date);
+  return `${year}-${month}-${day}`;
+}
+
+// Границы ВЧЕРАШНИХ суток по Иерусалиму как UTC Date: [startUtc, endUtc) —
+// начало включительно, конец (= начало сегодняшних суток) исключительно.
+// Плюс dateLabel — календарная дата вчера для текста отчёта.
+function getYesterdayRangeJerusalem(date = new Date()) {
+  const offsetMin = jerusalemOffsetMinutes(date);
+  const { year, month, day } = jerusalemPartsNow(date);
+  const todayStartUtc = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 0, 0, 0) - offsetMin * 60000);
+  const yesterdayStartUtc = new Date(todayStartUtc.getTime() - 24 * 60 * 60 * 1000);
+  // метка даты вчера: берём точку посреди вчерашних суток, чтобы не попасть
+  // на соседний день из-за смещения при переходе летнего/зимнего времени
+  const dateLabel = jerusalemDateString(new Date(yesterdayStartUtc.getTime() + 12 * 60 * 60 * 1000));
+  return { startUtc: yesterdayStartUtc, endUtc: todayStartUtc, dateLabel };
+}
+
+module.exports = {
+  isQuietHours,
+  isBusinessHours,
+  nextNineAmJerusalem,
+  jerusalemDateString,
+  getYesterdayRangeJerusalem,
+};
